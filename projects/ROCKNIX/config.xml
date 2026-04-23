@@ -45,6 +45,7 @@
     <a mkimage_options="dtb,bootscr,extlinux,uboot" fdt_type="fdtdir" fdt="/">
       <file>rk3326-anbernic-rg351m</file>
       <file>rk3326-anbernic-rg351v</file>
+      <file>rk3326-funnyplaying-rppocket</file>
       <file>rk3326-gameconsole-r33s</file>
       <file>rk3326-gameconsole-r36s</file>
       <file>rk3326-magicx-xu10</file>

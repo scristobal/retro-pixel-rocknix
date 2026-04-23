@@ -1,0 +1,26 @@
+From: FunnyPlaying RetroPixel Pocket port
+Subject: [PATCH] arm64: dts: rockchip: build rk3326-funnyplaying-rppocket.dtb
+
+Register the RetroPixel Pocket device tree in the arm64/rockchip DTB
+build list so that the ROCKNIX image ships it alongside the other
+RK3326 handheld DTBs.
+
+The .dts source itself is placed in this project's out-of-tree DTS
+directory (projects/ROCKNIX/devices/RK3326/linux/dts/rockchip/) and
+rsync'd into the kernel source tree by
+projects/ROCKNIX/packages/linux/package.mk:post_patch().
+
+---
+ arch/arm64/boot/dts/rockchip/Makefile | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm64/boot/dts/rockchip/Makefile b/arch/arm64/boot/dts/rockchip/Makefile
+--- a/arch/arm64/boot/dts/rockchip/Makefile
++++ b/arch/arm64/boot/dts/rockchip/Makefile
+@@ -43,6 +43,7 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3308-roc-cc.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-anbernic-rg351m.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-anbernic-rg351v.dtb
++dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-funnyplaying-rppocket.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-gameforce-chi.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-odroid-go2.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3326-odroid-go2-v11.dtb
