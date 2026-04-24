@@ -36,36 +36,35 @@
 };
 
 /*
- * FunnyPlaying gates three panel power rails (+5V, LCD-VCC, VSP/VSN
- * inverter) behind GPIO enable lines.  The vendor BSP's
- * simple-panel-dsi driver toggles these from DT properties on the
- * panel node (vspn-en, vcc_en_gpio, vcc5v_en_gpio); mainline has no
- * equivalent binding.  Instead of rewiring the power model, just
- * HOG the pins in their asserted state at GPIO-controller probe —
- * these rails are "always on while the device is running" anyway.
- * Active-low pins driven to logical HIGH (= pin LOW electrically)
- * means asserted/enabled.
+ * FunnyPlaying gates two panel power rails behind GPIO enable
+ * lines.  The vendor BSP drives these HIGH to enable (see
+ * panel_simple_prepare in the RPPocket BSP: gpio_set_value(vspn, 1)
+ * and gpio_set_value(vcc5v_en, 1)).  The DTB flag of 0x01
+ * (GPIO_ACTIVE_LOW) on those nodes is misleading — the driver uses
+ * raw values, so physical HIGH = power on.
+ *
+ * The third GPIO listed in the vendor DTB (vcc_en_gpio on RK_PB4)
+ * is actually consumed as an *input* pin for state detection
+ * (gpio_direction_input in the vendor probe), NOT as a power gate,
+ * so we leave it alone.
+ *
+ * Hog the two real power enables in their asserted (HIGH) state at
+ * GPIO-controller probe time — these rails stay on for the
+ * lifetime of the system, matching BSP semantics.
  */
 &gpio0 {
 	lcd-vspn-en-hog {
 		gpio-hog;
-		gpios = <RK_PA2 GPIO_ACTIVE_LOW>;
+		gpios = <RK_PA2 GPIO_ACTIVE_HIGH>;
 		output-high;
 		line-name = "lcd-vspn-en";
-	};
-
-	lcd-vcc-en-hog {
-		gpio-hog;
-		gpios = <RK_PB4 GPIO_ACTIVE_LOW>;
-		output-high;
-		line-name = "lcd-vcc-en";
 	};
 };
 
 &gpio3 {
 	lcd-vcc5v-en-hog {
 		gpio-hog;
-		gpios = <RK_PC3 GPIO_ACTIVE_LOW>;
+		gpios = <RK_PC3 GPIO_ACTIVE_HIGH>;
 		output-high;
 		line-name = "lcd-vcc5v-en";
 	};
