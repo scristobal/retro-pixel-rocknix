@@ -32,12 +32,56 @@
 					<3649470 20>, <3635260 15>, <3616920 10>, <3592440 5>,
 					<3574170 0>;
 	};
+
+	/*
+	 * FunnyPlaying wires three GPIO-controlled enable lines to the
+	 * panel's physical power rails; the vendor DTB calls these
+	 * vcc5v_en_gpio, vcc_en_gpio and vspn_en.  All three must be
+	 * asserted (driven LOW, they're ACTIVE_LOW) before the panel
+	 * can emit any light.  Model them as a chain of regulator-fixed
+	 * nodes so the panel driver enabling vdd-supply pulls all three
+	 * on via Linux's regulator framework.
+	 */
+	vcc5v_lcd: regulator-vcc5v-lcd {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc5v_lcd";
+		gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_LOW>;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		startup-delay-us = <2000>;
+	};
+
+	vcc_lcd_en: regulator-vcc-lcd-en {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc_lcd_en";
+		vin-supply = <&vcc5v_lcd>;
+		gpio = <&gpio0 RK_PB4 GPIO_ACTIVE_LOW>;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		startup-delay-us = <2000>;
+	};
+
+	vspn_en: regulator-vspn-en {
+		compatible = "regulator-fixed";
+		regulator-name = "vspn_en";
+		vin-supply = <&vcc_lcd_en>;
+		gpio = <&gpio0 RK_PA2 GPIO_ACTIVE_LOW>;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		startup-delay-us = <2000>;
+	};
 };
 
 &internal_display {
 	compatible = "jdi,lt031mdz4000";
+	/*
+	 * iovcc: LDO-supplied 2.8 V logic rail.  vdd: full power-rail
+	 * chain (VSP/VSN + LCD-VCC + 5V) gated by three GPIOs.  Enabling
+	 * vdd from the panel driver asserts all three enables in
+	 * dependency order via the vin-supply chain above.
+	 */
 	iovcc-supply = <&vcc_lcd>;
-	vdd-supply = <&vcc_lcd>;
+	vdd-supply = <&vspn_en>;
 	rotation = <270>;
 };
 
