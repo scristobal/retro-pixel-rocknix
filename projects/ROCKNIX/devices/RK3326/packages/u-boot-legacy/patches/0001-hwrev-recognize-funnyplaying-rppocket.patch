@@ -1,0 +1,36 @@
+From: FunnyPlaying RetroPixel Pocket port
+Subject: [PATCH] cmd/hwrev: recognize FunnyPlaying RetroPixel Pocket
+
+On RK3326 handhelds the Hardkernel-descended u-boot-legacy reads
+SARADC channel 0 during board bring-up and maps the raw value to
+one of a small hard-coded list of known devices (Odroid GO 2/3,
+Anbernic RG351V, Gameconsole R33S, ...).  If the value doesn't
+match any known range it falls through to an 'engineer sample'
+default that sets dtb_name="rk3326-odroidgo2-linux.dtb" — a file
+not shipped by ROCKNIX under that exact name, so fatload fails
+and the board bails out with odroid_alert_leds().
+
+The RetroPixel Pocket returns an ADC reading of ~399 on channel 0
+(measured from userspace via /sys/bus/iio/devices/iio:device0/
+in_voltage0_raw after the kernel boots).  Add a matching branch.
+
+---
+ cmd/hwrev.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/cmd/hwrev.c b/cmd/hwrev.c
+--- a/cmd/hwrev.c
++++ b/cmd/hwrev.c
+@@ -54,6 +54,11 @@ int do_hwrev(cmd_tbl_t *cmdtp, int flag, int argc, char * const argv[])
+         else if (check_range(460, 489, hwrev_adc)) {
+                 env_set("hwrev", "chi");
+                 env_set("dtb_name", "rk3326-gameforce-chi.dtb");
+         }
++	/* FunnyPlaying RetroPixel Pocket (RK3326) */
++	else if (check_range(380, 420, hwrev_adc)) {
++		env_set("hwrev", "rppocket");
++		env_set("dtb_name", "rk3326-funnyplaying-rppocket.dtb");
++	}
+ 	/* engineer samples */
+ 	else {
+ 		env_set("hwrev", "v00");

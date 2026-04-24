@@ -87,6 +87,21 @@ if (( FLASH )); then
 	mount "${DEV}1" "$BOOT_MNT"
 	cp "$BOOT_MNT/extlinux/extlinux.conf.rppocket" "$BOOT_MNT/extlinux/extlinux.conf"
 	umount "$BOOT_MNT"
+
+	# Pre-grow the storage partition to fill the SD card.  Otherwise
+	# the debug-hook files we drop under /storage/.config/ and
+	# /storage/.cache/ trick on-device fs-resize into thinking the
+	# system is already initialised (see projects/.../busybox/scripts/
+	# fs-resize, the /storage/.config || /storage/.cache check), so it
+	# refuses to resize.  The 32 MB placeholder partition then
+	# overflows during first-boot userland setup with "No space left on
+	# device" errors everywhere.  Do the resize ourselves, up front.
+	echo ">>> Resizing storage partition to fill the SD..."
+	parted -s "$DEV" resizepart 2 100%
+	partprobe "$DEV" 2>/dev/null || true
+	sleep 1
+	e2fsck -f -p "${DEV}2" || true
+	resize2fs "${DEV}2"
 fi
 
 # --- storage partition: drop hooks ------------------------------------------
