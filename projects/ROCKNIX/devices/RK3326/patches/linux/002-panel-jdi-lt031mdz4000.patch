@@ -18,8 +18,8 @@ Datasheet: https://www.panoxdisplay.com/uploadfile/datasheet/LT031MDZ4000.pdf
 ---
  drivers/gpu/drm/panel/Kconfig                    |  10 ++
  drivers/gpu/drm/panel/Makefile                   |   1 +
- drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c   | 260 +++++++++++++++++
- 3 files changed, 271 insertions(+)
+ drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c   | 274 +++++++++++++++++
+ 3 files changed, 285 insertions(+)
  create mode 100644 drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c
 
 diff --git a/drivers/gpu/drm/panel/Kconfig b/drivers/gpu/drm/panel/Kconfig
@@ -57,7 +57,7 @@ diff --git a/drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c b/drivers/gpu/drm/pa
 new file mode 100644
 --- /dev/null
 +++ b/drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,274 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * JDI LT031MDZ4000 3.1" 720x720 MIPI-DSI panel driver
