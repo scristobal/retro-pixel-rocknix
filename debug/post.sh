@@ -1,5 +1,5 @@
 #!/bin/bash
-# Read debugging artifacts written by pre.sh's systemd hook, plus any
+# Read debug artefacts written by pre.sh's autostart hook, plus any
 # u-boot-legacy error.log, and print interesting kernel messages.
 #
 # Usage: sudo ./post.sh [/dev/sdX]           (default: /dev/sdd)
@@ -29,72 +29,47 @@ umount "${DEV}2" 2>/dev/null || true
 
 mount "${DEV}1" "$BOOT_MNT"
 
-echo "============================================================"
-echo " Boot partition top-level"
-echo "============================================================"
-ls -la "$BOOT_MNT" | grep -iE 'error\.log|dmesg|lsmod|drm-names|journalctl' || echo "(no debug artefacts)"
+hr() { printf '%s\n' '============================================================'; }
+
+hr; echo " Boot partition — debug artefacts present?"; hr
+ls -la "$BOOT_MNT"/*.txt "$BOOT_MNT/error.log" 2>/dev/null || echo "(none found — autostart hook did not run)"
 
 if [[ -s "$BOOT_MNT/error.log" ]]; then
-	echo
-	echo "============================================================"
-	echo " u-boot error.log  (writes this = legacy bootloader failed)"
-	echo "============================================================"
+	echo; hr
+	echo " u-boot-legacy error.log (writing this means 1st-stage failed)"
+	hr
 	cat "$BOOT_MNT/error.log"; echo
 fi
 
-if [[ -s "$BOOT_MNT/drm-names.txt" ]]; then
-	echo
-	echo "============================================================"
-	echo " DRM device names (what bound to /dev/dri/*)"
-	echo "============================================================"
-	cat "$BOOT_MNT/drm-names.txt"
-fi
-
-if [[ -s "$BOOT_MNT/lsmod.txt" ]]; then
-	echo
-	echo "============================================================"
-	echo " Loaded panel/DRM/mali modules"
-	echo "============================================================"
-	grep -iE 'panel|drm|mali|panfrost|rockchip' "$BOOT_MNT/lsmod.txt" || echo "(none matching)"
+if [[ -s "$BOOT_MNT/rppocket-debug.txt" ]]; then
+	echo; hr; echo " rppocket-debug.txt (summary from the autostart hook)"; hr
+	cat "$BOOT_MNT/rppocket-debug.txt"
 fi
 
 if [[ -s "$BOOT_MNT/dmesg-boot.txt" ]]; then
+	echo; hr; echo " dmesg — display / panel / DSI / VOP / GPU lines"; hr
+	grep -iE 'jdi|lt031|panel|\bdsi\b|mipi|dw-mipi|rockchip[-_]drm|\bvop\b|panfrost|mali|drm:|backlight|edid|failed to|probe.*fail|\berror\b' \
+		"$BOOT_MNT/dmesg-boot.txt" | head -120 || echo "(no matches)"
 	echo
-	echo "============================================================"
-	echo " dmesg — display / panel / jdi / DSI / VOP relevant lines"
-	echo "============================================================"
-	grep -iE 'jdi|lt031|panel|\bdsi\b|mipi|dw-mipi|rockchip[-_]drm|\bvop\b|panfrost|mali|drm:|backlight|edid|failed to|probe.*fail|error' \
-		"$BOOT_MNT/dmesg-boot.txt" | head -100 || echo "(no matches)"
-	echo
-	echo "--- full dmesg size ---"
+	echo "--- dmesg full length ---"
 	wc -l "$BOOT_MNT/dmesg-boot.txt"
-	echo "(read full text at $BOOT_MNT/dmesg-boot.txt while SD is mounted)"
+	echo "(full dmesg at $BOOT_MNT/dmesg-boot.txt while SD is mounted — also copied to /tmp below)"
+	cp -f "$BOOT_MNT/dmesg-boot.txt" /tmp/rppocket-dmesg.txt 2>/dev/null && \
+		echo "copied to /tmp/rppocket-dmesg.txt"
 fi
 
 if [[ -s "$BOOT_MNT/journalctl-boot.txt" ]]; then
-	echo
-	echo "============================================================"
-	echo " journalctl — systemd service failures"
-	echo "============================================================"
-	grep -iE 'failed|error|panel|sway|weston|emulationstation|drm' \
-		"$BOOT_MNT/journalctl-boot.txt" | head -60 || echo "(no matches)"
+	echo; hr; echo " journalctl — failures and display-related lines"; hr
+	grep -iE 'failed|error|panel|sway|weston|emulationstation|drm|dsi|mipi' \
+		"$BOOT_MNT/journalctl-boot.txt" | head -80 || echo "(no matches)"
+	cp -f "$BOOT_MNT/journalctl-boot.txt" /tmp/rppocket-journal.txt 2>/dev/null && \
+		echo "full journal copied to /tmp/rppocket-journal.txt"
 fi
 
-echo
-echo "============================================================"
-echo " Partition sizes"
-echo "============================================================"
+if [[ -s "$BOOT_MNT/lsmod.txt" ]]; then
+	echo; hr; echo " lsmod — panel/DRM/mali/rockchip modules"; hr
+	grep -iE 'panel|drm|mali|panfrost|rockchip' "$BOOT_MNT/lsmod.txt" || echo "(none matching)"
+fi
+
+echo; hr; echo " Partition sizes (sanity)"; hr
 lsblk "$DEV"
-
-umount "$BOOT_MNT"
-
-# Try persistent journal if present
-mount "${DEV}2" "$STORE_MNT"
-JOURNAL_DIR="$STORE_MNT/.cache/log/journal"
-if [[ -d "$JOURNAL_DIR" ]] && compgen -G "$JOURNAL_DIR/*/*.journal" > /dev/null; then
-	echo
-	echo "============================================================"
-	echo " Persistent journal — current boot, errors"
-	echo "============================================================"
-	journalctl --directory "$JOURNAL_DIR" -b 0 --no-pager -p err 2>/dev/null | head -80 || true
-fi

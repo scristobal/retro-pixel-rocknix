@@ -1,7 +1,11 @@
 #!/bin/bash
-# Install debugging hooks onto the ROCKNIX SD card before boot:
-#   - persistent journald storage
-#   - a systemd oneshot that dumps dmesg/lsmod/drm names to the boot partition
+# Install debugging hooks onto the ROCKNIX SD card before boot.
+#
+# ROCKNIX runs scripts under /storage/.config/autostart/* after its own
+# platform/device quirks and after graphical.target, but BEFORE
+# EmulationStation starts.  This is a reliable headless diagnostic hook:
+# it fires even when the display pipeline is completely dead, because it
+# doesn't need a working compositor.
 #
 # Usage: sudo ./pre.sh [/dev/sdX]          (default: /dev/sdd)
 
@@ -23,8 +27,7 @@ fi
 
 SIZE_GB=$(lsblk -bno SIZE "$DEV" | head -1 | awk '{printf "%.0f", $1/1073741824}')
 if [[ "$SIZE_GB" -gt 64 ]]; then
-	echo "Refusing to touch $DEV — it is ${SIZE_GB} GB, which looks too large for the RPPocket SD card." >&2
-	echo "If this really is the SD, re-run after manually editing the size gate in $0." >&2
+	echo "Refusing to touch $DEV — it is ${SIZE_GB} GB, too large for the RPPocket SD card." >&2
 	exit 1
 fi
 
@@ -38,45 +41,70 @@ mkdir -p "$BOOT_MNT" "$STORE_MNT"
 umount "${DEV}1" 2>/dev/null || true
 umount "${DEV}2" 2>/dev/null || true
 
+# --- storage partition: drop the autostart hook ----------------------------
 mount "${DEV}2" "$STORE_MNT"
 
-# 1) Persistent journald
-mkdir -p "$STORE_MNT/.config/journald.conf.d"
-cat > "$STORE_MNT/.config/journald.conf.d/persist.conf" <<'EOF'
-[Journal]
-Storage=persistent
-ForwardToConsole=yes
+mkdir -p "$STORE_MNT/.config/autostart"
+
+# 000- prefix so it sorts earliest and runs before anything else user-supplied
+cat > "$STORE_MNT/.config/autostart/000-rppocket-debug.sh" <<'EOF'
+#!/bin/sh
+# Captures kernel & systemd state to the FAT boot partition (/flash) so
+# the host can read it by only un-plugging the SD card.  No console
+# required.  Runs via ROCKNIX's /usr/bin/autostart.
+
+OUT=/flash
+{
+	echo "=== date ==="
+	date
+
+	echo "=== uname -a ==="
+	uname -a
+
+	echo "=== /proc/device-tree/model ==="
+	cat /proc/device-tree/model 2>/dev/null; echo
+
+	echo "=== /proc/device-tree/compatible ==="
+	tr -d '\000' </proc/device-tree/compatible 2>/dev/null; echo
+
+	echo "=== lsblk ==="
+	lsblk 2>&1
+
+	echo "=== DRM devices ==="
+	for f in /sys/class/drm/*/name /sys/kernel/debug/dri/*/name ; do
+		[ -f "$f" ] || continue
+		echo "--- $f ---"
+		cat "$f" 2>/dev/null
+	done
+
+	echo "=== lsmod | panel/drm/mali ==="
+	lsmod | grep -iE 'panel|drm|mali|panfrost|rockchip' 2>&1
+
+	echo "=== systemd failed units ==="
+	systemctl --no-pager --failed 2>&1
+} > "$OUT/rppocket-debug.txt" 2>&1
+
+dmesg              > "$OUT/dmesg-boot.txt"      2>&1
+journalctl -b -a --no-pager > "$OUT/journalctl-boot.txt" 2>&1
+lsmod              > "$OUT/lsmod.txt"           2>&1
+
+sync
 EOF
+chmod +x "$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
 
-# 2) Oneshot service that dumps diagnostics to the FAT boot partition (/flash)
-mkdir -p "$STORE_MNT/.config/system.d"
-cat > "$STORE_MNT/.config/system.d/rppocket-dbg.service" <<'EOF'
-[Unit]
-Description=Capture dmesg/lsmod/drm names to /flash for headless debugging
-DefaultDependencies=no
-After=local-fs.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c 'dmesg > /flash/dmesg-boot.txt 2>&1; lsmod > /flash/lsmod.txt 2>&1; for f in /sys/kernel/debug/dri/*/name; do echo "== $f =="; cat "$f"; done > /flash/drm-names.txt 2>&1; journalctl -b --no-pager > /flash/journalctl-boot.txt 2>&1; sync'
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-mkdir -p "$STORE_MNT/.config/system.d/multi-user.target.wants"
-ln -sf ../rppocket-dbg.service \
-	"$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-dbg.service"
-
-# 3) Clear stale debug artefacts on boot partition so a failed boot is obvious
 umount "$STORE_MNT"
+
+# --- boot partition: wipe stale debug artefacts from a prior run -----------
 mount "${DEV}1" "$BOOT_MNT"
-rm -f "$BOOT_MNT/dmesg-boot.txt" "$BOOT_MNT/lsmod.txt" \
-	"$BOOT_MNT/drm-names.txt" "$BOOT_MNT/journalctl-boot.txt" \
+rm -f \
+	"$BOOT_MNT/dmesg-boot.txt" \
+	"$BOOT_MNT/lsmod.txt" \
+	"$BOOT_MNT/journalctl-boot.txt" \
+	"$BOOT_MNT/rppocket-debug.txt" \
 	"$BOOT_MNT/error.log"
 sync
 umount "$BOOT_MNT"
 
-echo ">>> OK. SD is prepped. Insert into RPPocket and power on."
-echo ">>> After ~3 min (or when the blinking LED settles), power off and run post.sh."
+echo ">>> OK. Insert SD into RPPocket and power on."
+echo ">>> Wait ~3 min (or until the blinking LED stops changing cadence),"
+echo ">>> power off with a long press, pull the SD, then run post.sh."
