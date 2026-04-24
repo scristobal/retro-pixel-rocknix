@@ -288,6 +288,39 @@ sync
 
 		echo "=== GPIO (looking for panel reset, backlight en) ==="
 		cat /sys/kernel/debug/gpio 2>/dev/null | head -80
+
+		# Experiment: swap sway's black background for white, then tell
+		# sway to reload config.  If the panel is actually being driven
+		# correctly, we should see the screen turn white (not black).
+		echo "=== swapping sway config to white background ==="
+		if [ -f /storage/.config/sway/config ]; then
+			sed -i 's/#000000/#ffffff/g' /storage/.config/sway/config 2>&1
+			grep "bg " /storage/.config/sway/config 2>&1
+			# Find sway's control socket and send reload
+			SWAYSOCK=$(find /var/run -name 'sway-ipc.*.sock' 2>/dev/null | head -1)
+			echo "SWAYSOCK=$SWAYSOCK"
+			if [ -n "$SWAYSOCK" ]; then
+				SWAYSOCK="$SWAYSOCK" sway -t reload 2>&1 || true
+			fi
+			# Fallback: SIGHUP sway
+			pkill -HUP -x sway 2>&1
+		fi
+
+		echo "=== backlight blink test (500ms off, 500ms on, 500ms off, 500ms on) ==="
+		# A visible-on-dark-screen indicator that the backlight *can* be
+		# modulated: if you watch the device during this test, you should
+		# see a faint 0.5Hz cycle.  If nothing at all changes, backlight
+		# isn't actually emitting light even at brightness=255.
+		for b in /sys/class/backlight/* ; do
+			[ -d "$b" ] || continue
+			MAX=$(cat "$b/max_brightness" 2>/dev/null)
+			for i in 1 2; do
+				echo 0 > "$b/brightness" 2>/dev/null
+				sleep 0.5
+				echo "$MAX" > "$b/brightness" 2>/dev/null
+				sleep 0.5
+			done
+		done
 	} > "$OUT/rppocket-late.txt" 2>&1
 
 	dmesg                       > "$OUT/dmesg-late.txt"      2>&1
