@@ -1,22 +1,44 @@
 #!/bin/bash
-# Install debugging hooks onto the ROCKNIX SD card before boot.
+# Prep a ROCKNIX SD card for a headless RPPocket boot attempt.
 #
-# ROCKNIX runs scripts under /storage/.config/autostart/* after its own
-# platform/device quirks and after graphical.target, but BEFORE
-# EmulationStation starts.  This is a reliable headless diagnostic hook:
-# it fires even when the display pipeline is completely dead, because it
-# doesn't need a working compositor.
+# By default (--no-flash) pre.sh only installs debug hooks on an
+# already-flashed card:
+#   - persistent systemd-journald config
+#   - /storage/.config/autostart/* script that dumps dmesg, journalctl,
+#     lsmod, DRM info, SARADC raw values, etc. to the FAT boot partition
+#     on every boot.
 #
-# Usage: sudo ./pre.sh [/dev/sdX]          (default: /dev/sdd)
+# With --flash, pre.sh also
+#   1. gunzips the newest ROCKNIX-*.aarch64-*-a.img.gz from ../target/
+#      and dd's it onto the SD first,
+#   2. renames extlinux.conf.rppocket -> extlinux.conf so u-boot selects
+#      our DTB instead of falling through to the OGA default.
+#
+# Usage:
+#   sudo ./pre.sh                    just (re-)install debug hooks
+#   sudo ./pre.sh --flash            flash newest image + rename + hooks
+#   sudo ./pre.sh --flash /dev/sdX   pick a non-default SD device
+#   sudo ./pre.sh /dev/sdX
 
 set -euo pipefail
 
-DEV="${1:-/dev/sdd}"
+FLASH=0
+DEV=/dev/sdd
+for arg in "$@"; do
+	case "$arg" in
+		--flash) FLASH=1 ;;
+		/dev/*)  DEV="$arg" ;;
+		*) echo "Unknown arg: $arg" >&2; exit 1 ;;
+	esac
+done
+
 BOOT_MNT=/mnt/rockboot
 STORE_MNT=/mnt/rockstore
+HERE="$(cd "$(dirname "$0")" && pwd)"
+TARGET_DIR="$HERE/../target"
 
 if [[ $EUID -ne 0 ]]; then
-	echo "Must run as root. Try: sudo $0 $DEV" >&2
+	echo "Must run as root. Try: sudo $0 $*" >&2
 	exit 1
 fi
 
@@ -31,8 +53,20 @@ if [[ "$SIZE_GB" -gt 64 ]]; then
 	exit 1
 fi
 
-echo ">>> Target: $DEV (${SIZE_GB} GB).  Press Ctrl-C within 3s to abort."
-sleep 3
+if (( FLASH )); then
+	IMG=$(ls -t "$TARGET_DIR"/ROCKNIX-*.aarch64-*-a.img.gz 2>/dev/null | head -1 || true)
+	if [[ -z "$IMG" ]]; then
+		echo "No flashable image found under $TARGET_DIR" >&2
+		exit 1
+	fi
+	echo ">>> Target: $DEV (${SIZE_GB} GB)"
+	echo ">>> Flash:  $IMG"
+	echo ">>> This will WIPE the SD card.  Ctrl-C within 5s to abort."
+	sleep 5
+else
+	echo ">>> Target: $DEV (${SIZE_GB} GB).  Press Ctrl-C within 3s to abort."
+	sleep 3
+fi
 
 cleanup() { umount "$STORE_MNT" 2>/dev/null || true; umount "$BOOT_MNT" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -40,6 +74,20 @@ trap cleanup EXIT
 mkdir -p "$BOOT_MNT" "$STORE_MNT"
 umount "${DEV}1" 2>/dev/null || true
 umount "${DEV}2" 2>/dev/null || true
+
+if (( FLASH )); then
+	echo ">>> Writing image (this takes 1-2 min)..."
+	gunzip -c "$IMG" | dd of="$DEV" bs=4M status=progress conv=fsync
+	sync
+	# Let the kernel re-read the partition table
+	partprobe "$DEV" 2>/dev/null || true
+	sleep 1
+
+	echo ">>> Selecting rppocket DTB via extlinux.conf..."
+	mount "${DEV}1" "$BOOT_MNT"
+	cp "$BOOT_MNT/extlinux/extlinux.conf.rppocket" "$BOOT_MNT/extlinux/extlinux.conf"
+	umount "$BOOT_MNT"
+fi
 
 # --- storage partition: drop hooks ------------------------------------------
 mount "${DEV}2" "$STORE_MNT"
@@ -147,3 +195,7 @@ umount "$BOOT_MNT"
 echo ">>> OK. Insert SD into RPPocket and power on."
 echo ">>> Wait ~3 min (or until the blinking LED stops changing cadence),"
 echo ">>> power off with a long press, pull the SD, then run post.sh."
+echo
+if (( FLASH )); then
+	echo "    (Flashed from $(basename "$IMG"))"
+fi
