@@ -41,9 +41,26 @@ mkdir -p "$BOOT_MNT" "$STORE_MNT"
 umount "${DEV}1" 2>/dev/null || true
 umount "${DEV}2" 2>/dev/null || true
 
-# --- storage partition: drop the autostart hook ----------------------------
+# --- storage partition: drop hooks ------------------------------------------
 mount "${DEV}2" "$STORE_MNT"
 
+# Persistent journald is the most reliable capture: journald starts in
+# sysinit.target, long before graphical.target or any autostart, so even
+# if the UI stack never comes up (dead display), the journal still lands
+# on disk.  ROCKNIX maps /storage/.cache/journald.conf.d/ to
+# /usr/lib/systemd/journald.conf.d/ (see projects/ROCKNIX/packages/
+# sysutils/systemd/package.mk:274).
+mkdir -p "$STORE_MNT/.cache/journald.conf.d"
+cat > "$STORE_MNT/.cache/journald.conf.d/persist.conf" <<'EOF'
+[Journal]
+Storage=persistent
+ForwardToConsole=yes
+SystemMaxUse=64M
+EOF
+
+# Autostart hook — only fires if ROCKNIX's rocknix.target activates
+# (which needs graphical.target to settle).  Kept as a nice-to-have
+# extra on top of the journal.
 mkdir -p "$STORE_MNT/.config/autostart"
 
 # 000- prefix so it sorts earliest and runs before anything else user-supplied

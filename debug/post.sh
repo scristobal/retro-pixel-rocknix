@@ -73,3 +73,34 @@ fi
 
 echo; hr; echo " Partition sizes (sanity)"; hr
 lsblk "$DEV"
+
+# --- persistent journal on the storage partition ----------------------------
+echo
+umount "$BOOT_MNT" 2>/dev/null || true
+if mount "${DEV}2" "$STORE_MNT" 2>/dev/null; then
+	JDIR=""
+	for cand in "$STORE_MNT/var/log/journal" "$STORE_MNT/.cache/log/journal"; do
+		if compgen -G "$cand/*/*.journal" > /dev/null 2>&1; then
+			JDIR="$cand"; break
+		fi
+	done
+	if [[ -n "$JDIR" ]]; then
+		hr; echo " Persistent journal: $JDIR"; hr
+		echo "(copying to /tmp/rppocket-journal-full.txt for easier paging)"
+		journalctl --directory "$JDIR" -b 0 --no-pager > /tmp/rppocket-journal-full.txt 2>&1 || true
+		echo
+		echo "--- current boot: panel/DSI/DRM/mali/sway/weston/errors ---"
+		journalctl --directory "$JDIR" -b 0 --no-pager 2>/dev/null | \
+			grep -iE 'jdi|lt031|panel|dsi|mipi|dw-mipi|rockchip[-_]drm|\bvop\b|panfrost|mali|drm:|backlight|sway|weston|failed|error' | \
+			head -120 || true
+		echo
+		echo "--- boots recorded ---"
+		journalctl --directory "$JDIR" --list-boots --no-pager 2>&1 | head -10
+	else
+		hr; echo " No persistent journal found on storage."; hr
+		echo "If you ran pre.sh from the updated debug scripts, journald"
+		echo "config is at /storage/.cache/journald.conf.d/persist.conf —"
+		echo "the journal only starts persisting from the NEXT boot."
+	fi
+	umount "$STORE_MNT" 2>/dev/null || true
+fi
