@@ -83,9 +83,17 @@ if (( FLASH )); then
 	partprobe "$DEV" 2>/dev/null || true
 	sleep 1
 
-	echo ">>> Selecting rppocket DTB via extlinux.conf..."
+	# If extlinux.conf.rppocket exists (older builds without the ADC
+	# patches), overlay it onto extlinux.conf.  Newer builds select the
+	# rppocket DTB via u-boot's ADC-based auto-detection, so no
+	# standalone .rppocket variant is generated and this step is a no-op.
 	mount "${DEV}1" "$BOOT_MNT"
-	cp "$BOOT_MNT/extlinux/extlinux.conf.rppocket" "$BOOT_MNT/extlinux/extlinux.conf"
+	if [[ -f "$BOOT_MNT/extlinux/extlinux.conf.rppocket" ]]; then
+		echo ">>> Overlaying extlinux.conf.rppocket onto extlinux.conf..."
+		cp "$BOOT_MNT/extlinux/extlinux.conf.rppocket" "$BOOT_MNT/extlinux/extlinux.conf"
+	else
+		echo ">>> No extlinux.conf.rppocket variant — relying on u-boot ADC auto-detection."
+	fi
 	umount "$BOOT_MNT"
 
 	# Pre-grow the storage partition to fill the SD card.  Otherwise
