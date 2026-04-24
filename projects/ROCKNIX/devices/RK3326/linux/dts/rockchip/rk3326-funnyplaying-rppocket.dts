@@ -70,10 +70,70 @@
 	};
 };
 
+/*
+ * Hardware differences in rk817 LDO wiring vs the RG351M dtsi we
+ * inherit from.  Reading the factory DTB's rk817/regulators node
+ * and cross-referencing the BSP panel-simple.c:
+ *
+ *            RG351M (mainline)      RPPocket (BSP/factory)
+ *   LDO_REG1 not defined             backlight2v8_supply  2.8V
+ *   LDO_REG7 vcc_bl         3.3V     lcd2v8_supply        2.8V
+ *   LDO_REG8 vcc_lcd        2.8V     vcc_lcd              1.8V
+ *
+ * LDO_REG1 is the physical power rail to the backlight LED driver
+ * and was therefore always off on this port — no current to the
+ * LEDs no matter what pwm-backlight did.
+ *
+ * Define LDO_REG1, and adjust REG7/REG8 voltages to match the
+ * RPPocket board.  Also point pwm-backlight at the backlight2v8
+ * rail since that is where the LED power actually comes from.
+ */
+&rk817 {
+	regulators {
+		backlight2v8: LDO_REG1 {
+			regulator-name = "backlight2v8_supply";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-always-on;
+			regulator-boot-on;
+
+			regulator-state-mem {
+				regulator-off-in-suspend;
+				regulator-suspend-microvolt = <2800000>;
+			};
+		};
+	};
+};
+
+/* LDO_REG7 on RPPocket is the LCD logic 2.8V, not the 3.3V BL
+ * supply of RG351M.  Bring the programmed voltage in line with
+ * what the board wants.  (Label stays &vcc_bl because that is the
+ * phandle name in the upstream dtsi; semantics are now
+ * lcd2v8_supply on this device.) */
+&vcc_bl {
+	regulator-min-microvolt = <2800000>;
+	regulator-max-microvolt = <2800000>;
+};
+
+/* LDO_REG8 on RPPocket is 1.8V, not 2.8V. */
+&vcc_lcd {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+};
+
+&backlight {
+	/* Route pwm-backlight's supply to LDO_REG1 (the actual LED
+	 * power), not LDO_REG7 (mislabeled vcc_bl on RG351M). */
+	power-supply = <&backlight2v8>;
+};
+
 &internal_display {
 	compatible = "jdi,lt031mdz4000";
+	/* iovcc = 1.8V logic rail (LDO_REG8, still called vcc_lcd in
+	 * the upstream dtsi). vdd = 2.8V LCD main supply (LDO_REG7,
+	 * still called vcc_bl in the upstream dtsi). */
 	iovcc-supply = <&vcc_lcd>;
-	vdd-supply = <&vcc_lcd>;
+	vdd-supply = <&vcc_bl>;
 	rotation = <270>;
 };
 
