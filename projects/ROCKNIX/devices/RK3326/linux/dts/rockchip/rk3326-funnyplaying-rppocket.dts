@@ -33,55 +33,48 @@
 					<3574170 0>;
 	};
 
-	/*
-	 * FunnyPlaying wires three GPIO-controlled enable lines to the
-	 * panel's physical power rails; the vendor DTB calls these
-	 * vcc5v_en_gpio, vcc_en_gpio and vspn_en.  All three must be
-	 * asserted (driven LOW, they're ACTIVE_LOW) before the panel
-	 * can emit any light.  Model them as a chain of regulator-fixed
-	 * nodes so the panel driver enabling vdd-supply pulls all three
-	 * on via Linux's regulator framework.
-	 */
-	vcc5v_lcd: regulator-vcc5v-lcd {
-		compatible = "regulator-fixed";
-		regulator-name = "vcc5v_lcd";
-		gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_LOW>;
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-		startup-delay-us = <2000>;
+};
+
+/*
+ * FunnyPlaying gates three panel power rails (+5V, LCD-VCC, VSP/VSN
+ * inverter) behind GPIO enable lines.  The vendor BSP's
+ * simple-panel-dsi driver toggles these from DT properties on the
+ * panel node (vspn-en, vcc_en_gpio, vcc5v_en_gpio); mainline has no
+ * equivalent binding.  Instead of rewiring the power model, just
+ * HOG the pins in their asserted state at GPIO-controller probe —
+ * these rails are "always on while the device is running" anyway.
+ * Active-low pins driven to logical HIGH (= pin LOW electrically)
+ * means asserted/enabled.
+ */
+&gpio0 {
+	lcd-vspn-en-hog {
+		gpio-hog;
+		gpios = <RK_PA2 GPIO_ACTIVE_LOW>;
+		output-high;
+		line-name = "lcd-vspn-en";
 	};
 
-	vcc_lcd_en: regulator-vcc-lcd-en {
-		compatible = "regulator-fixed";
-		regulator-name = "vcc_lcd_en";
-		vin-supply = <&vcc5v_lcd>;
-		gpio = <&gpio0 RK_PB4 GPIO_ACTIVE_LOW>;
-		regulator-min-microvolt = <3300000>;
-		regulator-max-microvolt = <3300000>;
-		startup-delay-us = <2000>;
+	lcd-vcc-en-hog {
+		gpio-hog;
+		gpios = <RK_PB4 GPIO_ACTIVE_LOW>;
+		output-high;
+		line-name = "lcd-vcc-en";
 	};
+};
 
-	vspn_en: regulator-vspn-en {
-		compatible = "regulator-fixed";
-		regulator-name = "vspn_en";
-		vin-supply = <&vcc_lcd_en>;
-		gpio = <&gpio0 RK_PA2 GPIO_ACTIVE_LOW>;
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-		startup-delay-us = <2000>;
+&gpio3 {
+	lcd-vcc5v-en-hog {
+		gpio-hog;
+		gpios = <RK_PC3 GPIO_ACTIVE_LOW>;
+		output-high;
+		line-name = "lcd-vcc5v-en";
 	};
 };
 
 &internal_display {
 	compatible = "jdi,lt031mdz4000";
-	/*
-	 * iovcc: LDO-supplied 2.8 V logic rail.  vdd: full power-rail
-	 * chain (VSP/VSN + LCD-VCC + 5V) gated by three GPIOs.  Enabling
-	 * vdd from the panel driver asserts all three enables in
-	 * dependency order via the vin-supply chain above.
-	 */
 	iovcc-supply = <&vcc_lcd>;
-	vdd-supply = <&vspn_en>;
+	vdd-supply = <&vcc_lcd>;
 	rotation = <270>;
 };
 
