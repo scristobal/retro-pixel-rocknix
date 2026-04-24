@@ -104,6 +104,22 @@ mount -o remount,rw "$OUT" 2>/dev/null
 
 	echo "=== systemd failed units ==="
 	systemctl --no-pager --failed 2>&1
+
+	echo "=== SARADC raw channel values ==="
+	# On RK3326 the hardware-ID is on saradc channel 0.  We want the
+	# raw number so we can teach u-boot-legacy's cmd/hwrev.c about this
+	# device and remove the DTB-rename SD hack.
+	for f in /sys/bus/iio/devices/iio:device*/in_voltage*_raw ; do
+		[ -f "$f" ] || continue
+		echo "--- $f ---"
+		cat "$f" 2>/dev/null
+	done
+	echo "=== SARADC device metadata ==="
+	for f in /sys/bus/iio/devices/iio:device*/name ; do
+		[ -f "$f" ] || continue
+		echo "--- $f ---"
+		cat "$f" 2>/dev/null
+	done
 } > "$OUT/rppocket-debug.txt" 2>&1
 
 dmesg                       > "$OUT/dmesg-boot.txt"      2>&1
