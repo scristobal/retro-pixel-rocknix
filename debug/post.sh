@@ -42,8 +42,22 @@ if [[ -s "$BOOT_MNT/error.log" ]]; then
 fi
 
 if [[ -s "$BOOT_MNT/rppocket-debug.txt" ]]; then
-	echo; hr; echo " rppocket-debug.txt (summary from the autostart hook)"; hr
+	echo; hr; echo " rppocket-debug.txt (EARLY snapshot — before sway start)"; hr
 	cat "$BOOT_MNT/rppocket-debug.txt"
+fi
+
+if [[ -s "$BOOT_MNT/rppocket-late.txt" ]]; then
+	echo; hr; echo " rppocket-late.txt (LATE snapshot — 45s into boot)"; hr
+	cat "$BOOT_MNT/rppocket-late.txt"
+fi
+
+if [[ -s "$BOOT_MNT/dmesg-late.txt" ]]; then
+	echo; hr
+	echo " LATE dmesg — panel prepare/enable attempts"
+	hr
+	grep -iE 'jdi|lt031|panel.*(prepare|enable|unprepare|disable)|dsi.*attach|dsi.*host|mipi.*write|drm.*connector|drm.*mode|drm:|modeset|sway|weston' \
+		"$BOOT_MNT/dmesg-late.txt" | head -80 || echo "(no matches)"
+	cp -f "$BOOT_MNT/dmesg-late.txt" /tmp/rppocket-dmesg-late.txt 2>/dev/null
 fi
 
 if [[ -s "$BOOT_MNT/dmesg-boot.txt" ]]; then

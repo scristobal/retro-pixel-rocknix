@@ -198,6 +198,62 @@ journalctl -b -a --no-pager > "$OUT/journalctl-boot.txt" 2>&1
 lsmod                       > "$OUT/lsmod.txt"           2>&1
 
 sync
+
+# Early capture done.  Now schedule a DELAYED second capture so we see
+# what happens AFTER ROCKNIX's autostart tries to start the UI service
+# (sway on RK3326).  The early capture fires before sway is invoked;
+# by the time the delayed one fires, sway has had its chance to open
+# /dev/dri/card0 and drive the panel (or fail trying).
+(
+	sleep 45
+	mount -o remount,rw "$OUT" 2>/dev/null
+
+	{
+		echo "=== LATE capture: date ==="
+		date
+
+		echo "=== /sys/class/drm (connectors, any attached?) ==="
+		for d in /sys/class/drm/card*-*; do
+			[ -d "$d" ] || continue
+			echo "--- $d ---"
+			echo "status: $(cat "$d/status" 2>/dev/null)"
+			echo "enabled: $(cat "$d/enabled" 2>/dev/null)"
+			echo "modes:"
+			cat "$d/modes" 2>/dev/null
+		done
+
+		echo "=== /sys/class/drm/card0/device listing ==="
+		ls -la /sys/class/drm/ 2>&1
+
+		echo "=== systemctl status sway ==="
+		systemctl status sway.service --no-pager 2>&1
+
+		echo "=== systemctl status weston ==="
+		systemctl status weston.service --no-pager 2>&1
+
+		echo "=== systemctl status emustation ==="
+		systemctl status emustation.service --no-pager 2>&1
+
+		echo "=== failed units (late) ==="
+		systemctl --no-pager --failed 2>&1
+
+		echo "=== ps (who has /dev/dri open) ==="
+		ps -ef 2>&1
+
+		echo "=== lsof /dev/dri/card0 (if lsof exists) ==="
+		lsof /dev/dri/card0 2>&1 | head -30
+
+		echo "=== sway log ==="
+		cat /var/log/sway.log 2>/dev/null | tail -100
+	} > "$OUT/rppocket-late.txt" 2>&1
+
+	dmesg                       > "$OUT/dmesg-late.txt"      2>&1
+	journalctl -b -a --no-pager > "$OUT/journalctl-late.txt" 2>&1
+
+	sync
+	mount -o remount,ro "$OUT" 2>/dev/null
+) &
+
 mount -o remount,ro "$OUT" 2>/dev/null
 EOF
 chmod +x "$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
@@ -211,6 +267,9 @@ rm -f \
 	"$BOOT_MNT/lsmod.txt" \
 	"$BOOT_MNT/journalctl-boot.txt" \
 	"$BOOT_MNT/rppocket-debug.txt" \
+	"$BOOT_MNT/rppocket-late.txt" \
+	"$BOOT_MNT/dmesg-late.txt" \
+	"$BOOT_MNT/journalctl-late.txt" \
 	"$BOOT_MNT/error.log"
 sync
 umount "$BOOT_MNT"
