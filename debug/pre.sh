@@ -71,6 +71,11 @@ cat > "$STORE_MNT/.config/autostart/000-rppocket-debug.sh" <<'EOF'
 # required.  Runs via ROCKNIX's /usr/bin/autostart.
 
 OUT=/flash
+
+# /flash is mounted read-only by default on ROCKNIX (see how fs-resize
+# handles its log write).  Remount rw, dump, remount ro.
+mount -o remount,rw "$OUT" 2>/dev/null
+
 {
 	echo "=== date ==="
 	date
@@ -101,11 +106,12 @@ OUT=/flash
 	systemctl --no-pager --failed 2>&1
 } > "$OUT/rppocket-debug.txt" 2>&1
 
-dmesg              > "$OUT/dmesg-boot.txt"      2>&1
+dmesg                       > "$OUT/dmesg-boot.txt"      2>&1
 journalctl -b -a --no-pager > "$OUT/journalctl-boot.txt" 2>&1
-lsmod              > "$OUT/lsmod.txt"           2>&1
+lsmod                       > "$OUT/lsmod.txt"           2>&1
 
 sync
+mount -o remount,ro "$OUT" 2>/dev/null
 EOF
 chmod +x "$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
 
