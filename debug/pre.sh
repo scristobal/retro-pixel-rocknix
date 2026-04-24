@@ -245,6 +245,49 @@ sync
 
 		echo "=== sway log ==="
 		cat /var/log/sway.log 2>/dev/null | tail -100
+
+		echo "=== backlight ==="
+		for b in /sys/class/backlight/* ; do
+			[ -d "$b" ] || continue
+			echo "--- $b ---"
+			for f in brightness max_brightness bl_power actual_brightness type ; do
+				printf '%-20s = %s\n' "$f" "$(cat "$b/$f" 2>/dev/null)"
+			done
+		done
+
+		echo "=== force-toggling backlight to max (experiment) ==="
+		for b in /sys/class/backlight/* ; do
+			[ -d "$b" ] || continue
+			MAX=$(cat "$b/max_brightness" 2>/dev/null)
+			echo 0 > "$b/bl_power" 2>/dev/null
+			echo "$MAX" > "$b/brightness" 2>/dev/null
+			echo "poked $b -> brightness=$MAX bl_power=0"
+		done
+		sleep 3
+
+		echo "=== backlight after toggle ==="
+		for b in /sys/class/backlight/* ; do
+			[ -d "$b" ] || continue
+			echo "--- $b ---"
+			for f in brightness max_brightness bl_power actual_brightness ; do
+				printf '%-20s = %s\n' "$f" "$(cat "$b/$f" 2>/dev/null)"
+			done
+		done
+
+		echo "=== PWM channels (what's running) ==="
+		for p in /sys/class/pwm/pwmchip*/pwm*/ ; do
+			[ -d "$p" ] || continue
+			echo "--- $p ---"
+			for f in enable period duty_cycle polarity ; do
+				printf '%-14s = %s\n' "$f" "$(cat "$p/$f" 2>/dev/null)"
+			done
+		done
+
+		echo "=== regulator summary ==="
+		cat /sys/kernel/debug/regulator/regulator_summary 2>/dev/null | head -80
+
+		echo "=== GPIO (looking for panel reset, backlight en) ==="
+		cat /sys/kernel/debug/gpio 2>/dev/null | head -80
 	} > "$OUT/rppocket-late.txt" 2>&1
 
 	dmesg                       > "$OUT/dmesg-late.txt"      2>&1
