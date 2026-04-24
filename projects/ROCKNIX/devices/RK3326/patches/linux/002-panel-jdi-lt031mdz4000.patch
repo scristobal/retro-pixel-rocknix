@@ -18,8 +18,8 @@ Datasheet: https://www.panoxdisplay.com/uploadfile/datasheet/LT031MDZ4000.pdf
 ---
  drivers/gpu/drm/panel/Kconfig                    |  10 ++
  drivers/gpu/drm/panel/Makefile                   |   1 +
- drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c   | 274 +++++++++++++++++
- 3 files changed, 285 insertions(+)
+ drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c   | 279 +++++++++++++++++
+ 3 files changed, 290 insertions(+)
  create mode 100644 drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c
 
 diff --git a/drivers/gpu/drm/panel/Kconfig b/drivers/gpu/drm/panel/Kconfig
@@ -57,7 +57,7 @@ diff --git a/drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c b/drivers/gpu/drm/pa
 new file mode 100644
 --- /dev/null
 +++ b/drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,279 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * JDI LT031MDZ4000 3.1" 720x720 MIPI-DSI panel driver
@@ -150,6 +150,8 @@ new file mode 100644
 +	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
 +	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
 +
++	dev_info(ctx->dev, "prepare: begin\n");
++
 +	dsi_ctx.accum_err = regulator_enable(ctx->vdd);
 +	if (dsi_ctx.accum_err) {
 +		dev_err(ctx->dev, "Failed to enable vdd supply: %d\n",
@@ -180,9 +182,11 @@ new file mode 100644
 +	if (dsi_ctx.accum_err)
 +		goto disable_iovcc;
 +
++	dev_info(ctx->dev, "prepare: done\n");
 +	return 0;
 +
 +disable_iovcc:
++	dev_err(ctx->dev, "prepare: failed (accum_err=%d)\n", dsi_ctx.accum_err);
 +	regulator_disable(ctx->iovcc);
 +disable_vdd:
 +	regulator_disable(ctx->vdd);
@@ -281,7 +285,8 @@ new file mode 100644
 +	dsi->lanes = 2;
 +	dsi->format = MIPI_DSI_FMT_RGB888;
 +	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_BURST |
-+			  MIPI_DSI_MODE_LPM;
++			  MIPI_DSI_MODE_LPM | MIPI_DSI_MODE_NO_EOT_PACKET |
++			  MIPI_DSI_CLOCK_NON_CONTINUOUS;
 +
 +	drm_panel_init(&ctx->panel, dev, &jdi_lt031_funcs,
 +		       DRM_MODE_CONNECTOR_DSI);
