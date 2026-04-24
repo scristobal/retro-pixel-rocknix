@@ -68,6 +68,18 @@
 		output-high;
 		line-name = "lcd-vcc5v-en";
 	};
+
+	/*
+	 * NS4150 audio amp enable.  Vendor BSP: gpio3 RK_PC5,
+	 * driven HIGH to enable — see panel-simple.c line 830:
+	 *   gpio_set_value(p->amp_en_gpio, 1);
+	 */
+	amp-en-hog {
+		gpio-hog;
+		gpios = <RK_PC5 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "ns4150-amp-en";
+	};
 };
 
 /*
@@ -134,7 +146,15 @@
 	 * still called vcc_bl in the upstream dtsi). */
 	iovcc-supply = <&vcc_lcd>;
 	vdd-supply = <&vcc_bl>;
-	rotation = <270>;
+	/*
+	 * Upstream rg351m inherits rotation=270 to compensate for a
+	 * panel mounted sideways.  RetroPixel Pocket panel is mounted
+	 * in the "natural" orientation.  Remove the inherited 270
+	 * rotation so the UI comes out upright.  (Tested: user reported
+	 * rotation=270 yielded content 90° counter-clockwise of
+	 * correct; setting 0 cancels that rotation.)
+	 */
+	rotation = <0>;
 };
 
 &rk817_charger {
