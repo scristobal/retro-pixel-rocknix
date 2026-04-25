@@ -33,6 +33,126 @@
 					<3574170 0>;
 	};
 
+	/*
+	 * Pin map taken from the factory DTB's odroidgo3-joypad node.
+	 * The vendor BSP uses a custom 'odroidgo3-joypad' driver which is
+	 * not in mainline; we re-express the same GPIOs as plain gpio-keys.
+	 * No analog sticks on this device, so no adc-joystick is needed.
+	 *
+	 * Some labels in the BSP didn't obviously correspond to physical
+	 * inputs (TOP-LEFT2/TOP-RIGHT2 with no L2/R2 buttons present, F1-F4
+	 * function keys without obvious destinations).  Best-guess mapping:
+	 *   - F1/F2 hot-keys → volume rocker up/down
+	 *   - TOP-LEFT2/RIGHT2 → SELECT/START (the only unaccounted-for
+	 *     labels next to two unaccounted-for physical buttons)
+	 *   - F3/F4 → exposed as BTN_MODE / BTN_TRIGGER_HAPPY1 so userspace
+	 *     can rebind them (probably one is a hotkey/menu).
+	 * Volume- and brightness-press clicks aren't represented in the
+	 * BSP node either; if those produce events in practice we will
+	 * have to add them once we know the GPIOs.
+	 */
+	gpio_keys: gpio-keys {
+		compatible = "gpio-keys";
+		autorepeat;
+
+		button-dpad-up {
+			label = "DPAD-UP";
+			gpios = <&gpio1 RK_PB4 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_DPAD_UP>;
+		};
+		button-dpad-down {
+			label = "DPAD-DOWN";
+			gpios = <&gpio1 RK_PB5 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_DPAD_DOWN>;
+		};
+		button-dpad-left {
+			label = "DPAD-LEFT";
+			gpios = <&gpio1 RK_PB6 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_DPAD_LEFT>;
+		};
+		button-dpad-right {
+			label = "DPAD-RIGHT";
+			gpios = <&gpio1 RK_PB7 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_DPAD_RIGHT>;
+		};
+
+		button-a {
+			label = "BTN-A";
+			gpios = <&gpio1 RK_PA2 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_EAST>;
+		};
+		button-b {
+			label = "BTN-B";
+			gpios = <&gpio1 RK_PA5 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_SOUTH>;
+		};
+		button-y {
+			label = "BTN-Y";
+			gpios = <&gpio1 RK_PA6 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_NORTH>;
+		};
+		button-x {
+			label = "BTN-X";
+			gpios = <&gpio1 RK_PA7 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_WEST>;
+		};
+
+		button-l {
+			label = "BTN-L";
+			gpios = <&gpio2 RK_PA6 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_TL>;
+		};
+		button-r {
+			label = "BTN-R";
+			gpios = <&gpio2 RK_PA7 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_TR>;
+		};
+
+		button-select {
+			label = "BTN-SELECT";
+			gpios = <&gpio3 RK_PB2 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_SELECT>;
+		};
+		button-start {
+			label = "BTN-START";
+			gpios = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_START>;
+		};
+
+		button-vol-up {
+			label = "VOL-UP";
+			gpios = <&gpio3 RK_PB1 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+		};
+		button-vol-down {
+			label = "VOL-DOWN";
+			gpios = <&gpio3 RK_PB4 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEDOWN>;
+		};
+
+		button-brightness-up {
+			label = "BRIGHTNESS-UP";
+			gpios = <&gpio2 RK_PA0 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_BRIGHTNESSUP>;
+		};
+		button-brightness-down {
+			label = "BRIGHTNESS-DOWN";
+			gpios = <&gpio2 RK_PA1 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_BRIGHTNESSDOWN>;
+		};
+
+		button-f3 {
+			label = "BTN-F3";
+			gpios = <&gpio2 RK_PA2 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_MODE>;
+		};
+		button-f4 {
+			label = "BTN-F4";
+			gpios = <&gpio2 RK_PA4 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_TRIGGER_HAPPY1>;
+		};
+	};
+
 };
 
 /*
