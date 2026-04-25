@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+
+. /storage/.config/profile.d/001-device_config
+
+# RetroPixel Pocket has a volume rocker — internal mixer always at 100%,
+# the rocker drives ROCKNIX's higher-level audio.volume setting instead.
+amixer -c 0 set "Master" "${DEVICE_VOLUME}%"

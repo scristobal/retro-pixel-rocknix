@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# FunnyPlaying RetroPixel Pocket device profile.
+#
+# Audio: rk817 codec exposes its output mux as "Playback Mux" (HP/SPK).
+# The actual speaker hangs off the codec's HP outputs (HPOL/HPOR) via
+# the NS4150 external amp, NOT off SPKO.  So in "speaker" mode we have
+# to point the codec mux at HP, not at SPK — that's the SPK/HP swap
+# below.  This matches what the Anbernic RG351M quirk does on
+# essentially the same audio topology.
+
+cat <<EOF >/storage/.config/profile.d/001-device_config
+# Device Features
+DEVICE_PLAYBACK_PATH="Playback Mux"
+DEVICE_PLAYBACK_PATH_SPK="HP"
+DEVICE_PLAYBACK_PATH_HP="SPK"
+DEVICE_VOLUME="100"
+DEVICE_BATTERY_LED_STATUS="false"
+DEVICE_TEMP_SENSOR="/sys/devices/virtual/thermal/thermal_zone0/temp"
+DEVICE_MMC_EJECT="false"
+EOF
