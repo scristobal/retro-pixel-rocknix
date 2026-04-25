@@ -176,6 +176,23 @@ mount -o remount,rw "$OUT" 2>/dev/null
 	echo "=== systemd failed units ==="
 	systemctl --no-pager --failed 2>&1
 
+	echo "=== ALSA cards ==="
+	cat /proc/asound/cards 2>&1
+	echo "--- aplay -l ---"
+	aplay -l 2>&1 | head -20
+	echo "--- amixer -c0 contents (initial) ---"
+	amixer -c0 contents 2>&1 | head -80
+	echo "--- pushing every common control to 100% unmuted ---"
+	for ctl in 'Master' 'Master Playback' 'PCM' 'PCM Playback' \
+		   'Speaker' 'Speaker Playback' 'Headphone' 'Headphone Playback' \
+		   'HP Playback' 'SPK Playback' 'Playback' 'OUTL' 'OUTR'; do
+		amixer -c0 sset "$ctl" 100% unmute 2>/dev/null
+	done
+	echo "--- amixer after push ---"
+	amixer -c0 contents 2>&1 | head -80
+	echo "--- 1s tone test (440Hz) — listen for it ---"
+	speaker-test -c2 -t sine -f 440 -l 1 -D default 2>&1 | head -10
+
 	echo "=== SARADC raw channel values ==="
 	# On RK3326 the hardware-ID is on saradc channel 0.  We want the
 	# raw number so we can teach u-boot-legacy's cmd/hwrev.c about this
