@@ -34,25 +34,40 @@
 	};
 
 	/*
-	 * Pin map taken from the factory DTB's odroidgo3-joypad node.
-	 * The vendor BSP uses a custom 'odroidgo3-joypad' driver which is
-	 * not in mainline; we re-express the same GPIOs as plain gpio-keys.
-	 * No analog sticks on this device, so no adc-joystick is needed.
+	 * Pin map drawn from the factory DTB's odroidgo3-joypad node.
+	 * The vendor BSP uses a custom 'odroidgo3-joypad' driver which
+	 * does live in our kernel (via 004-input-drivers.patch), but its
+	 * primary value is reading analog sticks through the amux ADC —
+	 * RPPocket has no analog sticks, so we use plain gpio-keys instead.
 	 *
-	 * Some BSP labels were repurposed for this body since RPPocket has
-	 * no L2/R2 shoulders; verified by testing on hardware:
-	 *   - F1/F2 (gpio3 PB1/PB4)         → physical SELECT/START
-	 *   - TOP-LEFT2/RIGHT2 (gpio3 PB2/PB7) → physical volume rocker
-	 *   - BACKUP/BACKDOWN (gpio2 PA0/PA1)  → brightness rocker
-	 *   - F3/F4 (gpio2 PA2/PA4)         → unaccounted-for, expose as
-	 *     BTN_MODE / BTN_TRIGGER_HAPPY1 so userspace can rebind.
-	 * Volume- and brightness-press clicks aren't represented in the
-	 * BSP node either; if those produce events in practice we will
-	 * have to add them once we know the GPIOs.
+	 * Pinctrl is mandatory: rockchip GPIO does not auto-mux pins to
+	 * RK_FUNC_GPIO, so any button pin whose default function is some
+	 * peripheral (UART/I2C/SPI) reads garbage without an explicit
+	 * iomux — this is why R-shoulder and the rocker tilts didn't
+	 * register on the first build.  The pin list mirrors odroid-go3's
+	 * btn_pins block, plus the two extra pins this device uses.
+	 *
+	 * Verified on hardware so far:
+	 *   - F1 (gpio3 PB1)        → physical SELECT
+	 *   - F2 (gpio3 PB4)        → physical START
+	 *   - TOP-LEFT2 (gpio3 PB2) → brightness-rocker centre press
+	 *   - TOP-RIGHT2 (gpio3 PB7) → volume-rocker centre press
+	 *
+	 * Unconfirmed (need evtest with pinctrl applied):
+	 *   - PA0/PA1/PA2/PA4 carry the four rocker tilts (vol up/down +
+	 *     brightness up/down) in some permutation.  Wiring distinct
+	 *     keycodes here lets us identify which GPIO is which; we'll
+	 *     finalise the labels once user testing reports back.
+	 *
+	 * The rocker centre-presses don't map to anything ROCKNIX needs,
+	 * so we park them on BTN_TRIGGER_HAPPY codes for userspace rebind.
 	 */
 	gpio_keys: gpio-keys {
 		compatible = "gpio-keys";
 		autorepeat;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&btn_pins>;
 
 		button-dpad-up {
 			label = "DPAD-UP";
@@ -118,40 +133,74 @@
 			linux,code = <BTN_START>;
 		};
 
-		button-vol-up {
-			label = "VOL-UP";
+		/*
+		 * gpio3 PB2/PB7 are the rocker *centre presses* (not the
+		 * tilts).  Park them on TRIGGER_HAPPY so a stray click
+		 * doesn't accidentally hit volume.
+		 */
+		button-brightness-click {
+			label = "BRIGHTNESS-CLICK";
 			gpios = <&gpio3 RK_PB2 GPIO_ACTIVE_LOW>;
-			linux,code = <KEY_VOLUMEUP>;
+			linux,code = <BTN_TRIGGER_HAPPY3>;
 		};
-		button-vol-down {
-			label = "VOL-DOWN";
+		button-volume-click {
+			label = "VOLUME-CLICK";
 			gpios = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
-			linux,code = <KEY_VOLUMEDOWN>;
+			linux,code = <BTN_TRIGGER_HAPPY4>;
 		};
 
-		button-brightness-up {
-			label = "BRIGHTNESS-UP";
+		/*
+		 * The four rocker tilts live on gpio2 PA0/PA1/PA2/PA4.
+		 * Provisional label-by-keycode so user testing can match
+		 * physical-action → GPIO; we'll finalise after evtest.
+		 */
+		button-tilt-pa0 {
+			label = "TILT-PA0";
 			gpios = <&gpio2 RK_PA0 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_BRIGHTNESSUP>;
 		};
-		button-brightness-down {
-			label = "BRIGHTNESS-DOWN";
+		button-tilt-pa1 {
+			label = "TILT-PA1";
 			gpios = <&gpio2 RK_PA1 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_BRIGHTNESSDOWN>;
 		};
-
-		button-f3 {
-			label = "BTN-F3";
+		button-tilt-pa2 {
+			label = "TILT-PA2";
 			gpios = <&gpio2 RK_PA2 GPIO_ACTIVE_LOW>;
-			linux,code = <BTN_MODE>;
+			linux,code = <KEY_VOLUMEUP>;
 		};
-		button-f4 {
-			label = "BTN-F4";
+		button-tilt-pa4 {
+			label = "TILT-PA4";
 			gpios = <&gpio2 RK_PA4 GPIO_ACTIVE_LOW>;
-			linux,code = <BTN_TRIGGER_HAPPY1>;
+			linux,code = <KEY_VOLUMEDOWN>;
 		};
 	};
 
+};
+
+&pinctrl {
+	btns {
+		btn_pins: btn-pins {
+			rockchip,pins = <1 RK_PA2 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PA5 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PA6 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PA7 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PB4 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PB5 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PB6 RK_FUNC_GPIO &pcfg_pull_up>,
+					<1 RK_PB7 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA0 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA1 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA2 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA4 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA6 RK_FUNC_GPIO &pcfg_pull_up>,
+					<2 RK_PA7 RK_FUNC_GPIO &pcfg_pull_up>,
+					<3 RK_PB1 RK_FUNC_GPIO &pcfg_pull_up>,
+					<3 RK_PB2 RK_FUNC_GPIO &pcfg_pull_up>,
+					<3 RK_PB4 RK_FUNC_GPIO &pcfg_pull_up>,
+					<3 RK_PB7 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+	};
 };
 
 /*
