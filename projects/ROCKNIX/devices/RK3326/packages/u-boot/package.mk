@@ -99,15 +99,4 @@ makeinstall_target() {
 
   find_dir_path config/stock && cp -av ${FOUND_PATH} "${INSTALL}/usr/share/bootloader/"
   find_dir_path config/overlays && cp -av ${FOUND_PATH} "${INSTALL}/usr/share/bootloader/"
-
-  # FunnyPlaying RetroPixel Pocket:
-  # The auto-generated extlinux.conf.rppocket inherits
-  # `FDTOVERLAYS /overlays/mipi-panel.dtbo` from the shared RK3326
-  # extlinux template, but no mipi-panel.dtbo is shipped for this
-  # device.  On the u-boot in use here a missing overlay aborts the
-  # whole FDT load path.  Strip the line only from the rppocket variant.
-  if [ -f "${INSTALL}/usr/share/bootloader/extlinux/extlinux.conf.rppocket" ]; then
-    sed -i '/FDTOVERLAYS/d' \
-      "${INSTALL}/usr/share/bootloader/extlinux/extlinux.conf.rppocket"
-  fi
 }

@@ -53,6 +53,18 @@ Agent workflow
        post.sh found the persistent journal at
        /mnt/rockstore/.cache/log/journal without a 'debugging'
        kernel command-line flag.
+[OK]   The shared RK3326 extlinux.conf still contains
+       FDTOVERLAYS /overlays/mipi-panel.dtbo.  debug/post.out from
+       the rebuilt image confirms RPPocket boot succeeds with that
+       line present: FunnyPlaying RetroPixel Pocket DTB, DSI-1
+       connected/enabled at 720x720, sway active, and no failed units
+       in the late capture.  The old
+       package.mk attempt to strip extlinux.conf.rppocket was removed:
+       that file is not generated for RPPocket because a_boot.ini
+       selects rk3326-funnyplaying-rppocket.dtb directly.  A fresh
+       make docker-RK3326 confirmed the generated u-boot extlinux set
+       is extlinux.conf, extlinux.conf.r36s, extlinux.conf.rgb20s, and
+       extlinux.conf.g350.
 
 Stuff that works
 ----------------
