@@ -198,7 +198,61 @@ mount -o remount,rw "$OUT" 2>/dev/null
 		echo "--- $f ---"
 		cat "$f" 2>/dev/null
 	done
+
+	# ---- input/pinctrl diagnostics --------------------------------------
+	# All three of these together let us localise *why* a button doesn't
+	# register: pinmux-pins shows whether our btn_pins pinctrl applied;
+	# /sys/kernel/debug/gpio shows the live level for every line (a pin
+	# pulled-up but never driven low = switch not wired); /proc/bus/input/
+	# devices + /proc/interrupts confirm gpio-keys claimed the IRQs we
+	# expect.
+
+	echo "=== /sys/kernel/debug/pinctrl/*/pinmux-pins (gpio2/gpio3 only) ==="
+	for f in /sys/kernel/debug/pinctrl/*/pinmux-pins ; do
+		[ -f "$f" ] || continue
+		echo "--- $f ---"
+		grep -E 'pin [0-9]+ \(GPIO[23]_[AB]' "$f" 2>/dev/null
+	done
+
+	echo "=== /sys/kernel/debug/gpio (all banks) ==="
+	cat /sys/kernel/debug/gpio 2>/dev/null
+
+	echo "=== /proc/bus/input/devices ==="
+	cat /proc/bus/input/devices 2>&1
+
+	echo "=== /proc/interrupts | gpio-keys ==="
+	grep -E 'gpio_keys|CPU' /proc/interrupts 2>&1
 } > "$OUT/rppocket-debug.txt" 2>&1
+
+# 60-second input-event capture — runs in background while the user
+# presses each physical button once, slowly, in the documented order.
+# Writes to /storage/.cache (always rw); when capture finishes, this
+# block does its own remount-rw of /flash and copies the logs out.
+mkdir -p /storage/.cache/evtest
+rm -f /storage/.cache/evtest/* 2>/dev/null
+(
+	for ev in /dev/input/event*; do
+		[ -e "$ev" ] || continue
+		name=$(basename "$ev")
+		# evtest may not exist; fall back to a hex dump of the raw
+		# struct input_event (24 bytes on aarch64: 16-byte timeval +
+		# u16 type + u16 code + s32 value).  Either output is enough
+		# to identify which GPIO is firing.
+		if command -v evtest >/dev/null 2>&1; then
+			( timeout 60 evtest --grab "$ev" \
+				> "/storage/.cache/evtest/$name.log" 2>&1 ) &
+		else
+			( timeout 60 od -An -tx1 -w24 "$ev" \
+				> "/storage/.cache/evtest/$name.hex" 2>&1 ) &
+		fi
+	done
+	wait
+	# Copy out of /storage onto /flash so post.sh can pull them.
+	mount -o remount,rw "$OUT" 2>/dev/null
+	cp -f /storage/.cache/evtest/* "$OUT/" 2>/dev/null
+	sync
+	mount -o remount,ro "$OUT" 2>/dev/null
+) &
 
 dmesg                       > "$OUT/dmesg-boot.txt"      2>&1
 journalctl -b -a --no-pager > "$OUT/journalctl-boot.txt" 2>&1

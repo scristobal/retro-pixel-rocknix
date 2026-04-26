@@ -85,6 +85,29 @@ if [[ -s "$BOOT_MNT/lsmod.txt" ]]; then
 	grep -iE 'panel|drm|mali|panfrost|rockchip' "$BOOT_MNT/lsmod.txt" || echo "(none matching)"
 fi
 
+# --- input-event capture ----------------------------------------------------
+if compgen -G "$BOOT_MNT/event*.log" > /dev/null 2>&1 || \
+   compgen -G "$BOOT_MNT/event*.hex" > /dev/null 2>&1; then
+	echo; hr; echo " evtest captures (60s window during boot)"; hr
+	for f in "$BOOT_MNT"/event*.log "$BOOT_MNT"/event*.hex; do
+		[ -f "$f" ] || continue
+		echo "--- $(basename "$f") ---"
+		# evtest log: keep only EV_KEY value=1 (press) lines, plus
+		# the device-name header so we know which event* device this is.
+		if [[ "$f" == *.log ]]; then
+			grep -E '^Input device name:|EV_KEY.*value 1' "$f" | head -40
+		else
+			head -20 "$f"
+		fi
+		echo
+	done
+	for f in "$BOOT_MNT"/event*.log "$BOOT_MNT"/event*.hex; do
+		[ -f "$f" ] || continue
+		cp -f "$f" "/tmp/rppocket-$(basename "$f")" 2>/dev/null
+	done
+	echo "(full evtest logs copied to /tmp/rppocket-event*.log)"
+fi
+
 echo; hr; echo " Partition sizes (sanity)"; hr
 lsblk "$DEV"
 
