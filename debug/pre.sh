@@ -180,25 +180,8 @@ mount -o remount,rw "$OUT" 2>/dev/null
 	cat /proc/asound/cards 2>&1
 	echo "--- aplay -l ---"
 	aplay -l 2>&1 | head -20
-	echo "--- amixer -c0 contents (initial) ---"
+	echo "--- amixer -c0 contents ---"
 	amixer -c0 contents 2>&1 | head -80
-	echo "--- pushing every common control to 100% unmuted ---"
-	for ctl in 'Master' 'Master Playback' 'PCM' 'PCM Playback' \
-		   'Speaker' 'Speaker Playback' 'Headphone' 'Headphone Playback' \
-		   'HP Playback' 'SPK Playback' 'Playback' 'OUTL' 'OUTR'; do
-		amixer -c0 sset "$ctl" 100% unmute 2>/dev/null
-	done
-	# RPPocket: rk817 SPKO pin is unwired; the speaker hangs off the
-	# headphone outputs (HPOL/HPOR) via the NS4150 amp.  Default
-	# 'Playback Mux' is SPK (sends audio to dead pin); switch to HP.
-	echo "--- forcing Playback Mux -> HP (route via headphone line) ---"
-	amixer -c0 sset 'Playback Mux' 'HP' 2>&1
-	echo "--- amixer after push ---"
-	amixer -c0 contents 2>&1 | head -80
-	echo "--- 1s tone test (440Hz) — listen for it ---"
-	speaker-test -c2 -t sine -f 440 -l 1 -D default 2>&1 | head -10
-	echo "--- second tone test using hw:0,0 directly ---"
-	speaker-test -c2 -t sine -f 440 -l 1 -D hw:0,0 2>&1 | head -10
 
 	echo "=== SARADC raw channel values ==="
 	# On RK3326 the hardware-ID is on saradc channel 0.  We want the
