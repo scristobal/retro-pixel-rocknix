@@ -51,20 +51,18 @@
 	 *   gpio1 PA2/5/6/7 = A/B/Y/X
 	 *   gpio2 PA6/PA7  = L/R shoulders
 	 *   gpio3 PB1/PB4  = SELECT/START   (BSP: F1/F2)
-	 *   gpio3 PB7      = volume rocker, tilt UP   (BSP: TOP-RIGHT2)
-	 *   gpio2 PA0      = volume rocker, tilt DOWN (BSP: BACKUP)
-	 *   gpio2 PA1      = volume rocker, centre press (BSP: BACKDOWN)
-	 *   gpio3 PB2      = brightness rocker, tilt UP (BSP: TOP-LEFT2)
+	 *   gpio2 PA0      = brightness rocker, upper edge (BSP: BACKUP)
+	 *   gpio2 PA1      = brightness rocker, lower edge (BSP: BACKDOWN)
+	 *   gpio3 PB2      = brightness rocker, centre press (BSP: TOP-LEFT2)
+	 *   gpio3 PD3      = volume up, from vendor commented rg351-keys
+	 *   gpio3 PC4      = volume down, from vendor commented rg351-keys
 	 *
-	 * Unconfirmed (no events on two consecutive captures):
-	 *   gpio2 PA2/PA4 (BSP: F3/F4)
-	 * By symmetry with the volume rocker — which uses (gpio3-high,
-	 * gpio2-low, gpio2-next) for (tilt-UP, tilt-DOWN, centre) — we
-	 * tentatively assign PA2 → brightness tilt DOWN and PA4 →
-	 * brightness centre.  These two switches may be physically dead
-	 * on this body, or wired to GPIOs we haven't enumerated; either
-	 * way the assignment is harmless if wrong (the events just
-	 * never fire) and useful if right.
+	 * The latest raw capture found PA0/PA1/PB2, but follow-up
+	 * flash testing showed volume up/down on the physical brightness
+	 * rocker.  That means the captured group was the brightness side.
+	 * The factory RPPocket DTS carries a separate, commented
+	 * rg351-keys node mapping volume to gpio3 PD3/PC4; those pins
+	 * were not part of the odroidgo3-joypad rocker list.
 	 *
 	 * The two rocker centre-presses don't map to a useful ROCKNIX
 	 * action, so they go on BTN_TRIGGER_HAPPY for userspace rebind.
@@ -142,33 +140,33 @@
 
 		button-vol-up {
 			label = "VOL-UP";
-			gpios = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio3 RK_PD3 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_VOLUMEUP>;
 		};
 		button-vol-down {
 			label = "VOL-DOWN";
-			gpios = <&gpio2 RK_PA0 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio3 RK_PC4 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_VOLUMEDOWN>;
 		};
 		button-vol-click {
 			label = "VOL-CLICK";
-			gpios = <&gpio2 RK_PA1 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
 			linux,code = <BTN_TRIGGER_HAPPY1>;
 		};
 
 		button-brightness-up {
 			label = "BRIGHTNESS-UP";
-			gpios = <&gpio3 RK_PB2 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio2 RK_PA0 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_BRIGHTNESSUP>;
 		};
 		button-brightness-down {
 			label = "BRIGHTNESS-DOWN";
-			gpios = <&gpio2 RK_PA2 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio2 RK_PA1 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_BRIGHTNESSDOWN>;
 		};
 		button-brightness-click {
 			label = "BRIGHTNESS-CLICK";
-			gpios = <&gpio2 RK_PA4 GPIO_ACTIVE_LOW>;
+			gpios = <&gpio3 RK_PB2 GPIO_ACTIVE_LOW>;
 			linux,code = <BTN_TRIGGER_HAPPY2>;
 		};
 	};
@@ -195,7 +193,9 @@
 					<3 RK_PB1 RK_FUNC_GPIO &pcfg_pull_up>,
 					<3 RK_PB2 RK_FUNC_GPIO &pcfg_pull_up>,
 					<3 RK_PB4 RK_FUNC_GPIO &pcfg_pull_up>,
-					<3 RK_PB7 RK_FUNC_GPIO &pcfg_pull_up>;
+					<3 RK_PB7 RK_FUNC_GPIO &pcfg_pull_up>,
+					<3 RK_PC4 RK_FUNC_GPIO &pcfg_pull_up>,
+					<3 RK_PD3 RK_FUNC_GPIO &pcfg_pull_up>;
 		};
 	};
 };

@@ -1,4 +1,4 @@
-011 - ROCKER MYSTERY (UNSOLVED)
+011 - ROCKER MYSTERY (VOLUME SOLVED, BRIGHTNESS UNRESOLVED)
 ==============================================================
 
 Problem statement
@@ -91,33 +91,116 @@ This contradicts test 1.  Either:
 
 We DO NOT know which of A, B, C is correct.
 
+Test 3 — delayed non-grabbing evtest capture
+--------------------------------------------
+debug/pre.sh was updated to run plain evtest on all /dev/input/event*
+nodes for a 240 second window after boot, without EVIOCGRAB.  The
+user confirmed they pressed all six groups in order, 5 presses each:
+
+    1. volume upper edge       -> KEY_VOLUMEDOWN      (gpio2 PA0)
+    2. volume lower edge       -> BTN_TRIGGER_HAPPY1  (gpio2 PA1)
+    3. volume straight press   -> KEY_BRIGHTNESSUP    (gpio3 PB2)
+    4. brightness upper edge   -> no event
+    5. brightness lower edge   -> no event
+    6. brightness straight     -> no event
+
+No KEY_VOLUMEUP (gpio3 PB7), KEY_BRIGHTNESSDOWN (gpio2 PA2), or
+BTN_TRIGGER_HAPPY2 (gpio2 PA4) events appeared.  The power key fired
+later in the same capture, proving the capture was still alive.
+
+Working conclusion: the volume rocker is wired to gpio2 PA0, gpio2
+PA1, and gpio3 PB2.  The brightness rocker is either not wired to the
+six BSP rocker GPIOs we know about, is mechanically not actuating, or
+uses a path we are not currently monitoring.
+
+Test 4 — flash feedback on the Test 3 mapping
+---------------------------------------------
+The Test 3 mapping put:
+
+    gpio2 PA0  -> KEY_VOLUMEUP
+    gpio2 PA1  -> KEY_VOLUMEDOWN
+    gpio3 PB2  -> BTN_TRIGGER_HAPPY1
+
+After a rebuild and flash, the user reported:
+
+    "somehow volume up/down is in the brightness rocker instead of
+    the volume rocker"
+
+That disproves the Test 3 physical-label interpretation.  The raw
+events were real, but the PA0/PA1/PB2 group belongs to the physical
+brightness rocker, not the physical volume rocker.
+
+Temporary DTS test mapping:
+
+    gpio2 PA0  -> KEY_BRIGHTNESSUP
+    gpio2 PA1  -> KEY_BRIGHTNESSDOWN
+    gpio3 PB2  -> BTN_TRIGGER_HAPPY2
+    gpio3 PB7  -> KEY_VOLUMEUP
+    gpio2 PA2  -> KEY_VOLUMEDOWN
+    gpio2 PA4  -> BTN_TRIGGER_HAPPY1
+
+That mapping was rebuilt and flashed next; Test 5 covers the result.
+
+Test 5 — vendor DTS check after volume still did nothing
+--------------------------------------------------------
+The swapped Test 4 mapping made the physical volume rocker do
+nothing.  Re-checking the original RPPocket kernel source found the
+missing piece in:
+
+    original-sources/extpackage/linux-kernel-rppocket/arch/arm64/boot/dts/rockchip/rk3326-rppocket_v6_0-linux.dts
+
+That DTS has the odroidgo3-joypad node we had been copying, but it
+also has a separate commented rg351-keys node for volume:
+
+    gpio3 PD3 -> KEY_VOLUMEUP
+    gpio3 PC4 -> KEY_VOLUMEDOWN
+
+The same file later shows those two pins as commented alternatives
+under the BACKUP/BACKDOWN entries before PA0/PA1 were selected for
+the joypad node.  This explains the failed tests: PA0/PA1/PB2 are
+real physical contacts, but they are not the volume rocker; the
+physical volume up/down contacts were never present in our gpio-keys
+node or pinctrl list.
+
+Test 6 — vendor volume pins confirmed
+-------------------------------------
+After rebuilding with the vendor DTS volume pins, the user confirmed:
+
+    Volume upper/lower rocker actions work.
+    Volume centre press does nothing.
+    Brightness rocker does nothing visibly.
+
+debug/post.out from that image confirms gpio-keys registered:
+
+    gpio3 PD3 -> VOL-UP
+    gpio3 PC4 -> VOL-DOWN
+    gpio3 PB7 -> VOL-CLICK
+    gpio2 PA0 -> BRIGHTNESS-UP
+    gpio2 PA1 -> BRIGHTNESS-DOWN
+    gpio3 PB2 -> BRIGHTNESS-CLICK
+
+Final DTS mapping for now:
+
+    gpio3 PD3 -> KEY_VOLUMEUP
+    gpio3 PC4 -> KEY_VOLUMEDOWN
+    gpio3 PB7 -> BTN_TRIGGER_HAPPY1  (unconfirmed volume click)
+    gpio2 PA0 -> KEY_BRIGHTNESSUP
+    gpio2 PA1 -> KEY_BRIGHTNESSDOWN
+    gpio3 PB2 -> BTN_TRIGGER_HAPPY2
+
 Open follow-up
 --------------
-The user needs to do a CLEAR-LABEL re-test that pins the physical
-action to the GPIO unambiguously:
+There is no clear vendor path for a dedicated brightness rocker.  The
+original RPPOCKET userspace uses Fn + volume up/down for brightness,
+with BTN_TRIGGER_HAPPY4 as the Fn key.  The original DTS maps that Fn
+code to gpio2 PA4, but PA4 has not fired in our captures.  PA0/PA1/PB2
+did fire, but the vendor scripts do not bind BTN_TRIGGER_HAPPY5/6 or
+BTN_TL2 to brightness/contrast.
 
-    1. Push only on the UPPER edge of the volume rocker.
-       What does the system do?
-    2. Push only on the LOWER edge of the volume rocker.
-       What does the system do?
-    3. Push STRAIGHT IN on the middle of the volume rocker.
-       What does the system do?
-    4-6. Same three actions for the brightness rocker.
-
-With the current DTS mapping, the visible reaction tells us the GPIO:
-
-    "system volume goes UP"        the GPIO is gpio3 PB7   (KEY_VOLUMEUP)
-    "system volume goes DOWN"      the GPIO is gpio2 PA0   (KEY_VOLUMEDOWN)
-    "screen brightness changes"    the GPIO is gpio3 PB2 or gpio2 PA2
-                                   (KEY_BRIGHTNESSUP / DOWN; userspace
-                                   may not bind these to anything visible)
-    "nothing happens"              either gpio2 PA1 / PA4 (TRIGGER_HAPPY,
-                                   no userspace handler), OR no GPIO
-                                   fired at all (the action is not
-                                   wired to anything we listen on)
-
-Once we have those 6 visible reactions reliably reported, finalising
-the rocker mapping is a 5-minute DTS edit.
+For now, ship working volume and leave brightness as unresolved.  If
+brightness is revisited, either wire a ROCKNIX userspace action to the
+observed PA0/PA1/PB2 contacts or probe the hardware to confirm whether
+PA4 is actually connected.
 
 Things we already tried that ruled out classes of bugs
 -------------------------------------------------------
@@ -151,6 +234,6 @@ Where to look if you pick this up
 
 Honest assessment
 -----------------
-This is the only piece blocking the port.  If hypothesis B is right
-(rockers have fewer switches than expected), we can ship as-is with
-just 4 keycodes assigned and call the others 'reserved'.
+Volume is resolved.  Brightness is not: the only clear vendor behavior
+is Fn + volume, not a separate working brightness rocker.  That is not
+blocking the rest of the port.

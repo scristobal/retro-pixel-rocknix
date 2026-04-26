@@ -90,17 +90,28 @@ Stuff that works
 [OK]   ROCKNIX device-quirks system applies the FunnyPlaying-specific
        audio routing (Playback Mux SPK -> HP swap) and the 100%
        Master gain at boot.
+[OK]   Physical volume rocker up/down works.  The vendor RPPocket DTS
+       carries these pins in a commented rg351-keys node:
+           gpio3 PD3 = KEY_VOLUMEUP
+           gpio3 PC4 = KEY_VOLUMEDOWN
+       A rebuilt/flashed image using those pins was confirmed by the
+       user.  debug/post.out from that image shows the gpio-keys lines
+       registered as VOL-UP on gpio3 PD3 and VOL-DOWN on gpio3 PC4.
 
 Stuff that's broken or unfinished
 ---------------------------------
-[BUG]  Volume and brightness rockers are mismapped.  Each has 3
-       physical actions (up tilt / down tilt / centre press).  4 of
-       the 6 actions fire SOMETHING in repeated tests, but the
-       physical action -> GPIO mapping is not consistent between
-       test sessions and real-use feedback.  Specifically: gpio2 PA2
-       and PA4 never fired any event in two consecutive captures.
-       See 011-rocker-mystery.txt for the full saga and the
-       outstanding 6-action test that would resolve it.
+[BUG]  Brightness rocker has no visible action.  The latest known
+       working image maps the observed PA0/PA1/PB2 contact group to
+       BRIGHTNESS-UP / BRIGHTNESS-DOWN / BRIGHTNESS-CLICK, but the
+       user confirmed it does not change brightness.  The original
+       RPPOCKET userspace implements brightness as Fn + volume, with
+       Fn on BTN_TRIGGER_HAPPY4 / gpio2 PA4; PA4 has not fired in our
+       captures.  No clear vendor path for a direct brightness rocker
+       has been found.
+
+[TODO] Volume centre press is registered as gpio3 PB7 /
+       BTN_TRIGGER_HAPPY1 but has no visible action.  This is expected
+       for now because ROCKNIX does not bind it to a user action.
 
 [TODO] Wi-Fi.  The device has a Realtek RTL8188EUS USB Wi-Fi module.
        The mainline 'r8188eu' staging driver should cover it, but is
@@ -129,27 +140,24 @@ Open questions
 1.  Are the rocker switches actually wired to gpio2 PA2 and PA4 on
     this device, or is the BSP's mention of those GPIOs a leftover
     from the RG351MP design that does not apply to RPPocket
-    physically?  Concrete way to find out: probe the rocker pins
-    with a multimeter while a switch is held.  Without that, see
-    011-rocker-mystery.txt for the next-best diagnostic step.
+    physically?  Latest evidence points to PA2/PA4 being leftovers:
+    the original RPPocket DTS identifies volume up/down as gpio3
+    PD3/PC4 instead.
 
 2.  Does the brightness rocker actually have three distinct
-    switches, or is the user describing a 2-switch component?
-    Resolved by the same physical inspection or by the 6-action
-    re-test in 011.
+    switches, and should ROCKNIX bind the observed PA0/PA1/PB2
+    contacts to a brightness action directly?  The vendor behavior
+    points instead to Fn + volume, but the Fn GPIO from the vendor
+    tree has not been observed firing.
 
 How to resume work
 ------------------
-1.  Boot the device with the current image and try the 6 rocker
-    actions described at the bottom of 011-rocker-mystery.txt.
-    Capture the visible reaction of each.
-2.  Edit the rocker entries in the gpio-keys block of
-    rk3326-funnyplaying-rppocket.dts to match what was learned.
-3.  Rebuild with make docker-RK3326, flash with debug/pre.sh --flash.
-4.  Verify rockers behave as expected.
-5.  Add r8188eu to linux.aarch64.conf and to ADDITIONAL_DRIVERS
+1.  Add r8188eu to linux.aarch64.conf and to ADDITIONAL_DRIVERS
     if needed; rebuild; verify Wi-Fi.
-6.  Keep commits on retropixel-pocket-support.  Rebase or merge over
+2.  If brightness is revisited, decide whether to add a ROCKNIX
+    userspace binding for PA0/PA1/PB2 or keep the vendor-style
+    Fn + volume model and investigate why gpio2 PA4 has not fired.
+3.  Keep commits on retropixel-pocket-support.  Rebase or merge over
     upstream/next when needed, then push the topic branch to origin
     and clean up the commit log if helpful for a future upstream PR.
 

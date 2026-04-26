@@ -410,8 +410,11 @@ rm -f \
 	"$BOOT_MNT/journalctl-boot.txt" \
 	"$BOOT_MNT/rppocket-debug.txt" \
 	"$BOOT_MNT/rppocket-late.txt" \
+	"$BOOT_MNT/rppocket-rocker-plan.txt" \
 	"$BOOT_MNT/dmesg-late.txt" \
 	"$BOOT_MNT/journalctl-late.txt" \
+	"$BOOT_MNT"/event*.log \
+	"$BOOT_MNT"/event*.hex \
 	"$BOOT_MNT/error.log"
 sync
 umount "$BOOT_MNT"
