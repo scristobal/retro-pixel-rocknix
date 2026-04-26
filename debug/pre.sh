@@ -395,9 +395,12 @@ mount -o remount,ro "$OUT" 2>/dev/null
 EOF
 chmod +x "$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
 
-# --- copy any local ROMs from debug/ onto /storage/roms/<system>/ ----------
+# --- copy any local ROMs from debug/ to /storage/games-internal/roms/ ------
 # Drop a ROM next to pre.sh and it gets installed at flash time.  ROCKNIX's
-# EmulationStation picks them up automatically; no metadata needed.
+# automount script bind-mounts /storage/games-internal/roms over /storage/roms
+# at boot (see projects/.../rocknix/sources/scripts/automount), so files
+# written directly into /storage/roms get masked.  The on-disk location we
+# want is games-internal/roms/<system>/.
 declare -A ROM_DESTS=(
 	[gb]=gb [gbc]=gbc [gba]=gba
 	[nes]=nes [smc]=snes [sfc]=snes
@@ -410,9 +413,9 @@ for src in "$HERE"/*.{gb,gbc,gba,nes,smc,sfc,md,gen,smd,n64,z64,v64,pce}; do
 	ext="${src##*.}"
 	dest="${ROM_DESTS[$ext]}"
 	[ -n "$dest" ] || continue
-	mkdir -p "$STORE_MNT/roms/$dest"
-	cp -f "$src" "$STORE_MNT/roms/$dest/"
-	echo ">>> Copied $(basename "$src") -> /storage/roms/$dest/"
+	mkdir -p "$STORE_MNT/games-internal/roms/$dest"
+	cp -f "$src" "$STORE_MNT/games-internal/roms/$dest/"
+	echo ">>> Copied $(basename "$src") -> /storage/games-internal/roms/$dest/"
 done
 shopt -u nullglob
 
