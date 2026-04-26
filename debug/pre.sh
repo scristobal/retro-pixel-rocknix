@@ -395,6 +395,27 @@ mount -o remount,ro "$OUT" 2>/dev/null
 EOF
 chmod +x "$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
 
+# --- copy any local ROMs from debug/ onto /storage/roms/<system>/ ----------
+# Drop a ROM next to pre.sh and it gets installed at flash time.  ROCKNIX's
+# EmulationStation picks them up automatically; no metadata needed.
+declare -A ROM_DESTS=(
+	[gb]=gb [gbc]=gbc [gba]=gba
+	[nes]=nes [smc]=snes [sfc]=snes
+	[md]=megadrive [gen]=megadrive [smd]=megadrive
+	[n64]=n64 [z64]=n64 [v64]=n64
+	[pce]=pcengine
+)
+shopt -s nullglob
+for src in "$HERE"/*.{gb,gbc,gba,nes,smc,sfc,md,gen,smd,n64,z64,v64,pce}; do
+	ext="${src##*.}"
+	dest="${ROM_DESTS[$ext]}"
+	[ -n "$dest" ] || continue
+	mkdir -p "$STORE_MNT/roms/$dest"
+	cp -f "$src" "$STORE_MNT/roms/$dest/"
+	echo ">>> Copied $(basename "$src") -> /storage/roms/$dest/"
+done
+shopt -u nullglob
+
 umount "$STORE_MNT"
 
 # --- boot partition: wipe stale debug artefacts from a prior run -----------
