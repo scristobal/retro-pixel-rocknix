@@ -34,9 +34,15 @@ What pre.sh installs on the SD's storage partition
     /storage/.cache/journald.conf.d/persist.conf
         Storage=persistent + ForwardToConsole=yes + 64M max use.
         Enables journal-on-disk so we can read the FULL kernel +
-        userspace journal back later.  This only takes effect from
-        the boot AFTER pre.sh installs it, so the FIRST boot's
-        journal is in the live ramdisk only.
+        userspace journal back later.
+
+    /storage/.cache/debug.rocknix
+    /storage/.cache/log/journal/
+        Marker + target directory for ROCKNIX's persistent /var/log
+        bind mount.  Without debug.rocknix, var-log.mount is skipped
+        unless the kernel command line contains 'debugging', and the
+        Storage=persistent journald drop-in can still leave us with
+        only volatile logs.
 
     /storage/.config/autostart/000-rppocket-debug.sh
         Runs near the end of ROCKNIX bootup, dumps a structured

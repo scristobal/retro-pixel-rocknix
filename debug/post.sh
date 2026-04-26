@@ -135,9 +135,10 @@ if mount "${DEV}2" "$STORE_MNT" 2>/dev/null; then
 		journalctl --directory "$JDIR" --list-boots --no-pager 2>&1 | head -10
 	else
 		hr; echo " No persistent journal found on storage."; hr
-		echo "If you ran pre.sh from the updated debug scripts, journald"
-		echo "config is at /storage/.cache/journald.conf.d/persist.conf —"
-		echo "the journal only starts persisting from the NEXT boot."
+		echo "If you ran pre.sh from the updated debug scripts, expect:"
+		echo "  /storage/.cache/debug.rocknix"
+		echo "  /storage/.cache/journald.conf.d/persist.conf"
+		echo "  /storage/.cache/log/journal/"
 	fi
 	umount "$STORE_MNT" 2>/dev/null || true
 fi

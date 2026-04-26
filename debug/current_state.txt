@@ -48,6 +48,12 @@ Agent workflow
 
        Then read debug/post.out before the next hardware-facing edit.
 
+[OK]   debug/pre.sh creates /storage/.cache/debug.rocknix and
+       /storage/.cache/log/journal.  Confirmed in debug/post.out:
+       post.sh found the persistent journal at
+       /mnt/rockstore/.cache/log/journal without a 'debugging'
+       kernel command-line flag.
+
 Stuff that works
 ----------------
 [OK]   Two-stage u-boot reliably picks the rk3326-funnyplaying-

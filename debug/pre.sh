@@ -118,10 +118,14 @@ mount "${DEV}2" "$STORE_MNT"
 # Persistent journald is the most reliable capture: journald starts in
 # sysinit.target, long before graphical.target or any autostart, so even
 # if the UI stack never comes up (dead display), the journal still lands
-# on disk.  ROCKNIX maps /storage/.cache/journald.conf.d/ to
-# /usr/lib/systemd/journald.conf.d/ (see projects/ROCKNIX/packages/
-# sysutils/systemd/package.mk:274).
-mkdir -p "$STORE_MNT/.cache/journald.conf.d"
+# on disk.  ROCKNIX only bind-mounts persistent /var/log when booted
+# with the "debugging" kernel option or when this marker exists (see
+# projects/ROCKNIX/packages/sysutils/busybox/system.d/var-log.mount).
+# The journald config symlink is installed from /storage/.cache/
+# journald.conf.d/ (see projects/ROCKNIX/packages/sysutils/systemd/
+# package.mk:274).
+mkdir -p "$STORE_MNT/.cache/journald.conf.d" "$STORE_MNT/.cache/log/journal"
+touch "$STORE_MNT/.cache/debug.rocknix"
 cat > "$STORE_MNT/.cache/journald.conf.d/persist.conf" <<'EOF'
 [Journal]
 Storage=persistent
