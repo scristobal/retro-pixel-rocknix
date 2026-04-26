@@ -97,6 +97,18 @@ Stuff that works
        A rebuilt/flashed image using those pins was confirmed by the
        user.  debug/post.out from that image shows the gpio-keys lines
        registered as VOL-UP on gpio3 PD3 and VOL-DOWN on gpio3 PC4.
+[OK]   RetroArch/libretro input is playable with the gpio-keys
+       autoconfig.  EmulationStation sees the built-in controls and
+       D-pad works in-menu.  /proc/bus/input/devices shows the
+       RPPocket gpio-keys node as "gpio-keys" with js0 + event2.  The
+       first RetroArch autoconfig used the wrong button order; the
+       working profile uses joydev's actual gpio-keys order:
+           0 B, 1 A, 2 Y, 3 X, 4 L, 5 R,
+           6 SELECT, 7 START,
+           8 UP, 9 DOWN, 10 LEFT, 11 RIGHT
+       Game Boy is confirmed playable.  The remaining missing pieces
+       are brightness/contrast rocker control and volume rocker centre
+       press.
 
 Stuff that's broken or unfinished
 ---------------------------------
@@ -131,9 +143,9 @@ Stuff that's broken or unfinished
        on RPPocket has not been characterised.  The device has a
        red+green dual LED; only red has been seen lit (at boot).
 
-[TODO] Test additional emulators.  Only Game Boy has been verified
-       end-to-end (system shows up + ROM list populates).  No game
-       has been launched into RetroArch yet.
+[TODO] Test additional emulators.  Game Boy is verified playable
+       through RetroArch/libretro.  Other systems have not been
+       verified end-to-end yet.
 
 Open questions
 --------------

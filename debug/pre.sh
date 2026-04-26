@@ -133,6 +133,14 @@ ForwardToConsole=yes
 SystemMaxUse=64M
 EOF
 
+# Let RetroArch pick up the RPPocket built-in gpio-keys device during
+# test cycles without requiring a full image rebuild.  The packaged
+# copy lives in retroarch-joypads/gamepads/ and will be installed into
+# /usr/share/libretro/autoconfig in rebuilt images.
+mkdir -p "$STORE_MNT/joypads"
+cp "$HERE/../projects/ROCKNIX/packages/emulators/libretro/retroarch/retroarch-joypads/gamepads/gpio-keys.cfg" \
+	"$STORE_MNT/joypads/gpio-keys.cfg"
+
 # Autostart hook — only fires if ROCKNIX's rocknix.target activates
 # (which needs graphical.target to settle).  Kept as a nice-to-have
 # extra on top of the journal.
