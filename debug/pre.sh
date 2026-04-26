@@ -141,6 +141,21 @@ mkdir -p "$STORE_MNT/joypads"
 cp "$HERE/../projects/ROCKNIX/packages/emulators/libretro/retroarch/retroarch-joypads/gamepads/gpio-keys.cfg" \
 	"$STORE_MNT/joypads/gpio-keys.cfg"
 
+# Install the user's licensed Raspberry Pi PICO-8 build for local test
+# images.  ROCKNIX's standalone launcher looks in /storage/roms/pico-8/
+# and uses the aarch64 subdirectory when it exists.
+PICO8_ZIP="$HERE/pico-8_0.2.7_raspi.zip"
+if [[ -f "$PICO8_ZIP" ]]; then
+	mkdir -p "$STORE_MNT/games-internal/roms/pico-8/aarch64"
+	unzip -q -o "$PICO8_ZIP" 'pico-8/*' -d "$STORE_MNT/games-internal/roms/pico-8/.tmp"
+	cp -f "$STORE_MNT/games-internal/roms/pico-8/.tmp/pico-8/"* \
+		"$STORE_MNT/games-internal/roms/pico-8/aarch64/"
+	rm -rf "$STORE_MNT/games-internal/roms/pico-8/.tmp"
+	chmod 0755 "$STORE_MNT/games-internal/roms/pico-8/aarch64"/pico8*
+	touch "$STORE_MNT/games-internal/roms/pico-8/Splore.png"
+	echo ">>> Installed PICO-8 Raspberry Pi build -> /storage/roms/pico-8/aarch64/"
+fi
+
 # Autostart hook — only fires if ROCKNIX's rocknix.target activates
 # (which needs graphical.target to settle).  Kept as a nice-to-have
 # extra on top of the journal.

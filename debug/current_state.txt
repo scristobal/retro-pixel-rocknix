@@ -87,6 +87,15 @@ Stuff that works
 [OK]   Game Boy emulator picks up ROMs deposited via debug/pre.sh.
        Verified with Super Mario Land (USA) (Rev-A).gb in the
        /storage/games-internal/roms/gb/ folder.
+[OK]   PICO-8 standalone launches from the user's licensed Raspberry
+       Pi archive, installed by debug/pre.sh from:
+           debug/pico-8_0.2.7_raspi.zip
+       into:
+           /storage/roms/pico-8/aarch64/
+       Splore is exposed by /storage/roms/pico-8/Splore.png, and the
+       RPPocket gpio-keys SDL GUID is in gamecontrollerdb:
+           1900bb07010000009178000000050000
+       using the same button order as the confirmed RetroArch profile.
 [OK]   ROCKNIX device-quirks system applies the FunnyPlaying-specific
        audio routing (Playback Mux SPK -> HP swap) and the 100%
        Master gain at boot.
