@@ -224,7 +224,7 @@ mount -o remount,rw "$OUT" 2>/dev/null
 	grep -E 'gpio_keys|CPU' /proc/interrupts 2>&1
 } > "$OUT/rppocket-debug.txt" 2>&1
 
-# 60-second input-event capture — runs in background while the user
+# 120-second input-event capture — runs in background while the user
 # presses each physical button once, slowly, in the documented order.
 # Writes to /storage/.cache (always rw); when capture finishes, this
 # block does its own remount-rw of /flash and copies the logs out.
@@ -239,10 +239,10 @@ rm -f /storage/.cache/evtest/* 2>/dev/null
 		# u16 type + u16 code + s32 value).  Either output is enough
 		# to identify which GPIO is firing.
 		if command -v evtest >/dev/null 2>&1; then
-			( timeout 60 evtest --grab "$ev" \
+			( timeout 120 evtest --grab "$ev" \
 				> "/storage/.cache/evtest/$name.log" 2>&1 ) &
 		else
-			( timeout 60 od -An -tx1 -w24 "$ev" \
+			( timeout 120 od -An -tx1 -w24 "$ev" \
 				> "/storage/.cache/evtest/$name.hex" 2>&1 ) &
 		fi
 	done
