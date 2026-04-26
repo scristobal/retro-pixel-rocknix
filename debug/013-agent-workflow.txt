@@ -1,0 +1,93 @@
+013 - AGENT WORKFLOW
+==============================================================
+
+This file is for coding agents picking up the RetroPixel Pocket port.
+Follow it before making changes.
+
+Branch rule
+-----------
+All RetroPixel Pocket commits belong on:
+
+    retropixel-pocket-support
+
+Do not commit RPPocket work on 'next'.  The 'next' branch is reserved
+as a clean mirror of ROCKNIX upstream's next branch:
+
+    next == origin/next == upstream/next
+
+If the checkout is not on retropixel-pocket-support, switch to it
+before editing or committing.  If new upstream work is needed, update
+next from upstream/next first, then rebase or merge
+retropixel-pocket-support over it.
+
+Debug notes vs commit log
+-------------------------
+Commit messages carry the per-change debug log.  Each hardware-facing
+commit should explain:
+
+    - the observed problem or new evidence
+    - the hypothesis being tested
+    - what changed
+    - what the user should test next, if applicable
+
+The debug/*.txt files are NOT a running diary.  Keep them as compact
+handoff/reference material:
+
+    - current_state.txt records the latest known status: branch state,
+      latest known good image, what works, what is broken, open
+      questions, and the next concrete test.
+    - Topic notes record stable knowledge and conclusions: 005 for
+      boot flow, 006 for DTS, 007 for panel, 008 for power, 009 for
+      audio, 010/011 for input, 012 for debug tooling.
+    - Do not append blow-by-blow change logs to these files.  Put that
+      detail in the commit message.
+
+Do not leave important reasoning only in chat.  The next agent should
+be able to recover the state from current_state.txt, the relevant
+topic notes, and git history.
+
+Build and device-test rule
+--------------------------
+After a code change, decide whether the device must be reflashed:
+
+    Ask the user to run:
+
+        sudo ./debug/pre.sh --flash /dev/sdX
+
+    only when the changed result must be written into a fresh image or
+    storage reset is important.  Examples: DTS, kernel patch, kernel
+    config, u-boot, bootloader files, bundled quirks, rootfs defaults,
+    or anything that needs a clean first-boot state.
+
+    Ask the user to run:
+
+        sudo ./debug/pre.sh /dev/sdX
+
+    when the existing SD image is still valid and only the debug hook
+    or local ROM copy needs refreshing.
+
+After the user boots and powers down the device, expect them to run:
+
+    sudo ./debug/post.sh /dev/sdX > debug/post.out
+
+The user should then tell the agent that debug/post.out is updated.
+Read debug/post.out before making the next hardware-facing change.
+
+Agent response pattern
+----------------------
+For each hardware-facing iteration:
+
+    1. Make the smallest code/docs change that tests one hypothesis.
+    2. Update current_state.txt or a topic note only if the current
+       project state or stable conclusions changed.
+    3. Build if needed.
+    4. Tell the user exactly which pre.sh command to run.
+    5. Wait for the user to update debug/post.out.
+    6. Read debug/post.out and update current_state.txt / topic notes
+       only with the resulting current state and durable conclusions.
+    7. Only then decide the next change.
+    8. When committing, put the detailed debug log for the change in
+       the commit message.
+
+Do not ask for --flash by reflex.  It is correct when the image/rootfs
+must change, but it costs the user a full flash and first-boot cycle.

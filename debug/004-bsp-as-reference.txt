@@ -1,0 +1,89 @@
+004 - THE BSP AS A REFERENCE
+==============================================================
+
+The single biggest unblocking trick on this port: when in doubt, READ
+THE FACTORY BSP.  The RetroPixel Pocket V2 ships with an AmberELEC-
+derived firmware whose source is dumped (not in any nice form) into a
+7 GB tarball.
+
+Where to find it
+----------------
+    /home/samu/repos/others/RetroPixel_Pocket/extpackage/
+        linux-kernel-rppocket/      vendor kernel source
+        u-boot-rppocket/            vendor u-boot source
+        rkbin-...../                Rockchip blob loader binaries
+        AmberELEC-Config/           vendor distribution config
+        ...                         many other emulator-specific dirs
+
+The kernel under linux-kernel-rppocket/ is the most useful piece — it
+is essentially a fork of Hardkernel's RK3326 BSP kernel with an
+'odroidgo3-joypad' driver and a panel-simple.c that knows about the
+JDI panel and its power-rail GPIOs.
+
+Files we leaned on heavily during the port
+------------------------------------------
+    extpackage/linux-kernel-rppocket/
+        drivers/gpu/drm/panel/panel-simple.c
+            * panel_simple_prepare(): exact init order for the panel,
+              with raw gpio_set_value() calls for vspn_gpio, vcc5v_en
+              and amp_en — telling us the GPIOs are driven HIGH=enable
+              regardless of the misleading GPIO_ACTIVE_LOW flag in the
+              vendor DTB.
+            * Init sequence DSI commands for the JDI LT031MDZ4000 —
+              byte-identical to the jamwu RPi-LCD-LT031MDZ4000 driver,
+              which is how we identified the panel model.
+
+        drivers/input/joystick/odroidgo3-joypad.c
+            * The "joypad driver" is really an amux+ADC analog-stick
+              reader; the GPIO buttons just have plain linux,code from
+              the DT.  We don't ship the driver — we use plain
+              gpio-keys for the same pins.
+
+        arch/arm64/boot/dts/rockchip/(factory dtb if extracted)
+            * The odroidgo3-joypad node enumerates every input GPIO
+              with its BSP label (DPAD-UP, F1, TOP-LEFT2, BACKUP, ...)
+              and a linux,code value.  This is where we got the pin
+              map for buttons.
+
+Factory image
+-------------
+    /home/samu/repos/others/RetroPixel_Pocket/images/extracted/v1.0.img
+
+Mounted via udisksctl loop-setup; partition 1 is FAT32 boot, partition
+2 is the 32 MB ext4 system placeholder.  The factory DTB lives at:
+
+    boot/rk3326-rg351mp-linux.dtb     (mislabelled — this IS the
+                                       RetroPixel Pocket DTB; the
+                                       upstream RG351MP DTB doesn't
+                                       have JDI-panel + custom GPIOs)
+
+Decompiled DTB lives at /tmp/claude/stock004.dts during a debug
+session.  If that path is empty, redo:
+
+    udisksctl loop-setup -f .../images/extracted/v1.0.img
+    udisksctl mount -b /dev/loopXp1
+    cp /run/media/.../rk3326-rg351mp-linux.dtb /tmp/
+    dtc -I dtb -O dts /tmp/rk3326-rg351mp-linux.dtb > /tmp/stock.dts
+
+Things derived from BSP we now embed in our DTS
+------------------------------------------------
+    - Power rail GPIO polarity (008-power-rails.txt)
+    - LDO_REG1 / REG7 / REG8 voltage assignments (008)
+    - NS4150 amp enable GPIO and 'amp must be on for any audio' (009)
+    - GPIO button pin map (010)
+    - JDI panel init sequence (007)
+    - SARADC channel-0 fingerprint range (005)
+
+Things we explicitly DID NOT take from BSP
+-------------------------------------------
+    - The vendor kernel itself (we use mainline 6.12.79)
+    - panel-simple.c (we wrote a clean panel-jdi-lt031mdz4000 driver)
+    - The odroidgo3-joypad driver (we use plain gpio-keys)
+    - Hardkernel u-boot 2nd stage (we use mainline u-boot v2025.10)
+      - We DO use Hardkernel's u-boot-legacy for TPL+SPL, with one
+        tiny patch to add our hwrev string (see 005)
+    - extpackage/AmberELEC-Config (replaced by ROCKNIX configs)
+
+If something behaves unexpectedly on this device and there is no obvious
+mainline analogue, the BSP is the first place to look.  It got the
+hardware running once.

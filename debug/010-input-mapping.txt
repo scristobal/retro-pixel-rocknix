@@ -1,0 +1,120 @@
+010 - INPUT MAPPING (the working part)
+==============================================================
+
+Approach
+--------
+The factory BSP uses an out-of-tree 'odroidgo3-joypad' driver, which
+combines an analog-stick reader (over an amux + SARADC channel 1)
+with a list of GPIO buttons that have plain linux,code values.
+
+RPPocket has NO analog sticks, so the amux/ADC half of the joypad
+driver is useless to us.  ROCKNIX upstream DOES carry the
+odroidgo3-joypad driver (via projects/.../patches/linux/004-input-drivers.patch),
+so we COULD use it — but plain mainline 'gpio-keys' is simpler and
+covers every button this device actually has.
+
+We use:
+    - gpio-keys for all 18 button GPIOs
+    - A custom pinctrl block (btn_pins) muxing each pin to RK_FUNC_GPIO
+      with pcfg_pull_up
+
+The 12 buttons that worked first try
+-------------------------------------
+After adding pinctrl (commit 4d983b6f34, which fixed the R-shoulder
+non-response), all 12 standard buttons fire correct keycodes:
+
+    Physical button    GPIO          DTS keycode       Test result
+    ---------------    --------      --------------    -----------
+    D-pad UP           gpio1 PB4     BTN_DPAD_UP       fires correctly
+    D-pad DOWN         gpio1 PB5     BTN_DPAD_DOWN     fires correctly
+    D-pad LEFT         gpio1 PB6     BTN_DPAD_LEFT     fires correctly
+    D-pad RIGHT        gpio1 PB7     BTN_DPAD_RIGHT    fires correctly
+    A                  gpio1 PA2     BTN_EAST          fires correctly
+    B                  gpio1 PA5     BTN_SOUTH         fires correctly
+    Y                  gpio1 PA6     BTN_NORTH         fires correctly
+    X                  gpio1 PA7     BTN_WEST          fires correctly
+    L                  gpio2 PA6     BTN_TL            fires correctly
+    R                  gpio2 PA7     BTN_TR            fires correctly
+    SELECT             gpio3 PB1     BTN_SELECT        fires correctly
+    START              gpio3 PB4     BTN_START         fires correctly
+
+Confirmed via evtest /dev/input/event2 during a controlled boot test.
+
+Why pinctrl is mandatory
+------------------------
+On rockchip SoCs, each pin has a default 'iomux' function (UART, I2C,
+SPI, GPIO, ...) baked into the GPIO controller's reset state.  When
+you reference a pin from gpio-keys, the gpio framework will request
+it as input from the GPIO controller, but it WILL NOT change the iomux
+to RK_FUNC_GPIO if the default function is some peripheral.  The pin
+sits half-claimed: the gpio driver returns whatever stale value the
+peripheral happens to leave on the line.
+
+Symptom: button fires no events.
+
+This bit us with R shoulder before the pinctrl block was added.
+The gpio2 PA7 pin's default function on RK3326 is something other
+than GPIO; without an explicit iomux override the pin reads garbage.
+
+Fix in DTS
+----------
+    gpio_keys: gpio-keys {
+        compatible = "gpio-keys";
+        autorepeat;
+        pinctrl-names = "default";
+        pinctrl-0 = <&btn_pins>;
+        ...
+    };
+
+    &pinctrl {
+        btns {
+            btn_pins: btn-pins {
+                rockchip,pins = <1 RK_PA2 RK_FUNC_GPIO &pcfg_pull_up>,
+                                <1 RK_PA5 RK_FUNC_GPIO &pcfg_pull_up>,
+                                ... 18 entries ...;
+            };
+        };
+    };
+
+Pinctrl pin list (the 18 we mux)
+--------------------------------
+    Bank 1:  PA2 PA5 PA6 PA7 PB4 PB5 PB6 PB7   (D-pad + ABXY)
+    Bank 2:  PA0 PA1 PA2 PA4 PA6 PA7           (rocker GPIOs + L/R)
+    Bank 3:  PB1 PB2 PB4 PB7                    (SELECT + START + 2 rocker)
+
+Verifying at runtime
+--------------------
+    cat /sys/kernel/debug/gpio
+
+    Should list each of the 18 button pins under gpiochipN with label
+    matching its DTS 'label' field, all in state 'in hi IRQ ACTIVE LOW'.
+    "in" means the kernel has it as an input; "hi" because pcfg_pull_up
+    holds it high until the switch yanks it low.
+
+    cat /proc/bus/input/devices
+
+    Should show:
+        N: Name="gpio-keys"
+        H: Handlers=kbd js0 event2
+
+    so the gpio-keys node is exposed both as a keyboard (kbd) and a
+    joystick (js0), and its character device is /dev/input/event2.
+
+What we explicitly did NOT do
+-----------------------------
+    - Use the odroidgo3-joypad driver.  It's in our kernel (built by
+      ROCKNIX's 004-input-drivers.patch), but adds complexity for no
+      gain on a stickless device.
+    - Use adc-joystick.  Same reason — no analog sticks.
+
+Caveat — input_sense in ROCKNIX
+-------------------------------
+ROCKNIX runs a userspace daemon /usr/bin/input_sense that itself
+spawns evtest on /dev/input/event0 and event2 to monitor for inputs.
+This is NORMAL and does not block other readers (it does not use
+EVIOCGRAB).  Don't be alarmed by seeing evtest in the process list.
+
+Open question
+-------------
+    The volume and brightness rockers don't behave as expected.  See
+    011-rocker-mystery.txt.

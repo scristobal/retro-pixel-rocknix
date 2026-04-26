@@ -1,0 +1,109 @@
+003 - FORK AND BUILD
+==============================================================
+
+Working directory
+-----------------
+    /home/samu/repos/others/ROCKNIX-rppocket
+
+Git remotes
+-----------
+    git@github.com:scristobal/retro-pixel-rocknix.git   (origin / fork)
+    git@github.com:ROCKNIX/distribution.git             (upstream)
+
+Branch
+------
+    retropixel-pocket-support
+
+This is the topic branch that carries the RetroPixel Pocket work.
+It currently has the port commits plus these debug handoff docs.
+
+The local and fork 'next' branches have been realigned to ROCKNIX
+upstream's 'next':
+
+    next == origin/next == upstream/next
+
+Do not put new RPPocket commits directly on 'next'.  Keep them on
+retropixel-pocket-support, then rebase or merge that branch over the
+latest upstream/next when needed.
+
+Upstream
+--------
+    https://github.com/ROCKNIX/distribution
+
+The ROCKNIX upstream targets many devices and architectures via a single
+build tree.  We only build the RK3326 device target; everything else is
+left alone.
+
+Build command
+-------------
+The project's normal entry point is:
+
+    cd /home/samu/repos/others/ROCKNIX-rppocket
+    make docker-RK3326
+
+This wraps a make RK3326 inside the official ghcr.io/rocknix/rocknix-build
+container so we don't need to install OE/buildroot toolchain bits on the
+host.  The container needs Docker networking working (see notes below);
+otherwise the actual build is fully reproducible.
+
+Outputs
+-------
+    target/ROCKNIX-RK3326.aarch64-YYYYMMDD-a.img.gz   <- this is what we flash
+    target/ROCKNIX-RK3326.aarch64-YYYYMMDD-b.img.gz   <- different RK3326 group, do not use
+
+Why two images?  config.xml line 21-42 splits the RK3326 device list into
+two named groups, 'a' and 'b', each with its own DTB set and boot config.
+The RetroPixel Pocket lives in group 'a'.  Always flash the -a image.
+
+Build cycle, typical
+--------------------
+With ccache warm, an incremental rebuild (just changing DTS / patches /
+quirks) takes 1-2 minutes.  A clean RK3326 build from cold ccache takes
+~30-90 minutes depending on host.
+
+Common host issues
+------------------
+1.  After an Arch kernel upgrade, Docker container networking dies with
+
+        failed to add the host (vethXXXX) <=> sandbox (vethYYYY)
+        pair interfaces: operation not supported
+
+    This means /usr/lib/modules/$(uname -r) does not contain veth.ko —
+    typically because pacman removed the old kernel's modules during the
+    upgrade and the new modules don't apply to the still-running kernel.
+    Fix: REBOOT.  Then make docker-RK3326 works again.
+
+2.  Push fails over HTTPS in some sandboxed environments.  The remote is
+    set to SSH (git@github.com:scristobal/...) which requires an
+    ssh-agent in the shell.  If pushing from this Claude Code session,
+    use the user's outer terminal: prefix with '!' so it runs in the
+    real shell with agent access.
+
+Repo layout (relevant subset only)
+----------------------------------
+    projects/ROCKNIX/
+        bootloader/mkimage              SD-image assembly (DTBs, extlinux)
+        config.xml                      RK3326 device groups, file lists
+        devices/RK3326/
+            linux/dts/rockchip/         our DTS lives here
+                rk3326-funnyplaying-rppocket.dts
+                rk3326-odroid-go.dtsi   (parent dtsi, inherited)
+            linux/linux.aarch64.conf    kernel config delta
+            patches/linux/              kernel patches (panel driver, etc.)
+            packages/u-boot/            mainline u-boot v2025.10
+            packages/u-boot-legacy/     Hardkernel u-boot for TPL+SPL
+        packages/hardware/quirks/devices/
+            FunnyPlaying RetroPixel Pocket/
+                001-device_config       per-device profile.d
+                050-volume              volume init quirk
+
+    debug/                              host-side debug helpers (this directory)
+
+Custom patches we ship (in addition to ROCKNIX upstream)
+--------------------------------------------------------
+    devices/RK3326/patches/linux/002-panel-jdi-lt031mdz4000.patch
+    devices/RK3326/patches/linux/003-rk3326-funnyplaying-rppocket-dtb.patch
+    devices/RK3326/packages/u-boot-legacy/patches/0001-hwrev-recognize-funnyplaying-rppocket.patch
+    devices/RK3326/packages/u-boot/config/a_boot.ini       (modified)
+    devices/RK3326/linux/dts/rockchip/rk3326-funnyplaying-rppocket.dts
+    devices/RK3326/linux/linux.aarch64.conf                (CONFIG_DRM_PANEL_JDI_LT031MDZ4000=y)

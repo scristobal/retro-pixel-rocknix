@@ -1,0 +1,76 @@
+002 - TARGET DEVICE
+==============================================================
+
+FunnyPlaying RetroPixel Pocket "V2"
+------------------------------------
+
+There are at least two RetroPixel Pocket revisions in the wild and they
+are different SoCs.  This port is ONLY for the RK3326 variant.
+
+    V1.0 / V1.1.x  RK3326     <- this port (also factory-named "V2")
+    V3             RK3566     <- separate device, not handled here
+
+To verify a device is the right one, the SARADC fingerprint on channel 0
+reads ~399 (range 380-420 in our hwrev rule), and /proc/device-tree/compatible
+on the running stock firmware reports rockchip,rk3326.
+
+Component summary
+-----------------
+
+    SoC          Rockchip RK3326
+                 4x Cortex-A35 @ 1.5 GHz, Mali-G31
+
+    PMIC         Rockchip rk817
+                 Multiple LDOs feed the panel/codec; see 008-power-rails.txt
+
+    Panel        JDI LT031MDZ4000
+                 3.1", 720x720, square IPS, MIPI-DSI 2-lane
+                 Init sequence is byte-identical to the jamwu RPi-LCD
+                 LT031MDZ4000 driver; no datasheet has surfaced.
+
+    Backlight    PWM-driven LED, powered from rk817 LDO_REG1 ('backlight2v8')
+
+    Audio        rk817 internal codec
+                 SPK output (SPKO pin) is unwired on this board.
+                 The actual loudspeaker hangs off the codec's HP outputs
+                 (HPOL/HPOR) via an NS4150 external class-D amplifier.
+                 Amp enable: gpio3 RK_PC5, active-high.
+
+    Battery      3000 mAh single-cell Li-Po
+                 No current-sense resistor (charge-only, no fuel-gauge
+                 current readback).
+                 No rumble motor.
+
+    Buttons      14-physical-input layout:
+                 - 4-way D-pad
+                 - 4 face buttons (A, B, X, Y)
+                 - 2 shoulders (L, R)
+                 - SELECT, START
+                 - 3-action volume rocker (up tilt, down tilt, centre press)
+                 - 3-action brightness rocker (up tilt, down tilt, centre press)
+                 - Power slider (springs back)
+                 No analog sticks.
+
+    SD slot      Single microSD on mmc0; primary boot device.
+
+    Wi-Fi        Realtek RTL8188EUS (USB-attached)
+                 Driver: rtl8188eu (out-of-tree on most kernels;
+                 mainline has staging/r8188eu since 5.18)
+                 NOT yet enabled in our build.
+
+GPIO/pin map (from hardware testing + BSP DTB)
+-----------------------------------------------
+
+    gpio1 PB4-PB7   D-pad UP/DOWN/LEFT/RIGHT
+    gpio1 PA2/5/6/7 A / B / Y / X
+    gpio2 PA6/PA7   L / R shoulders
+    gpio2 PA0/1/2/4 brightness/volume rocker switches (see 011)
+    gpio3 PB1/PB4   SELECT / START
+    gpio3 PB2/PB7   rocker switches (see 011)
+    gpio0 RK_PA2    LCD VSPN power enable    (active-high, hogged on)
+    gpio3 RK_PC3    LCD VCC5V power enable   (active-high, hogged on)
+    gpio3 RK_PC5    NS4150 audio amp enable  (active-high, hogged on)
+    SARADC ch0      hardware fingerprint     (~399 raw)
+
+Everything not listed here is either inherited from rk3326-odroid-go.dtsi
+unchanged, or unused.

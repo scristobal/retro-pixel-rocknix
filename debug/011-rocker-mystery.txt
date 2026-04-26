@@ -1,0 +1,156 @@
+011 - ROCKER MYSTERY (UNSOLVED)
+==============================================================
+
+Problem statement
+-----------------
+The RetroPixel Pocket has two physical "rockers" (small flat tabs you
+can tilt up, tilt down, or push straight in):
+    - Volume rocker
+    - Brightness rocker
+
+Each is mechanically a 3-action switch (up tilt, down tilt, centre
+press), so 6 actions total across both rockers.
+
+We can't get all 6 actions to fire predictable, consistent keycodes.
+
+What we know about the candidate GPIOs
+--------------------------------------
+The factory BSP joypad node lists six GPIOs that are "rocker-like" —
+i.e. not the D-pad, ABXY, L, R, SELECT, or START:
+
+    gpio2 PA0     BSP label "BACKUP"        BSP linux,code BTN_TRIGGER_HAPPY5
+    gpio2 PA1     BSP label "BACKDOWN"      BSP linux,code BTN_TRIGGER_HAPPY6
+    gpio2 PA2     BSP label "F3"            BSP linux,code BTN_TRIGGER_HAPPY3
+    gpio2 PA4     BSP label "F4"            BSP linux,code BTN_TRIGGER_HAPPY4
+    gpio3 PB2     BSP label "TOP-LEFT2"     BSP linux,code BTN_TL2
+    gpio3 PB7     BSP label "TOP-RIGHT2"    BSP linux,code BTN_TR2
+
+The BSP labels are misleading — they were inherited from the RG351MP /
+ODROID-GO Super reference design which had L2/R2 and brightness keys
+in a different layout.  On RPPocket those names DO NOT correspond to
+the physical actions.
+
+Test 1 — captures during boot (commits 4d983b6f34 + 3d6450b517)
+----------------------------------------------------------------
+We ran 'evtest --grab' for 60s (later 120s) on every /dev/input/event*
+during boot, asked the user to press each rocker action in a
+documented order, and copied the logs out via post.sh.
+
+Two consecutive captures both produced this pattern (filtered to
+press-down events only):
+
+    User intent                    Fired GPIO    Fired keycode
+    ---------------------------    ----------    -------------
+    "Volume tilt UP"               gpio3 PB7     BTN_TRIGGER_HAPPY4
+    "Volume tilt DOWN"             gpio2 PA0     KEY_BRIGHTNESSUP
+    "Volume centre press"          gpio2 PA1     KEY_BRIGHTNESSDOWN
+    "Brightness tilt UP"           gpio3 PB2     BTN_TRIGGER_HAPPY3
+    "Brightness tilt DOWN"         (no event fired)
+    "Brightness centre press"      (no event fired)
+
+So 4 out of 6 actions fire some GPIO; the remaining 2 brightness-side
+actions don't fire any of the 18 button GPIOs we have wired up.
+PA2 / PA4 in particular never fire across two test runs.
+
+Based on those captures we shipped a "best guess" mapping (commit 3d6450b517):
+
+    gpio3 PB7  -> KEY_VOLUMEUP                (vol tilt UP)
+    gpio2 PA0  -> KEY_VOLUMEDOWN              (vol tilt DOWN)
+    gpio2 PA1  -> BTN_TRIGGER_HAPPY1          (vol centre)
+    gpio3 PB2  -> KEY_BRIGHTNESSUP            (brt tilt UP)
+    gpio2 PA2  -> KEY_BRIGHTNESSDOWN          (brt tilt DOWN, GUESS)
+    gpio2 PA4  -> BTN_TRIGGER_HAPPY2          (brt centre, GUESS)
+
+Test 2 — real-use feedback after that mapping shipped
+-----------------------------------------------------
+With the above DTS, the user reported on actual usage:
+
+    "Volume centre press"          increases system volume
+                                   (i.e. some GPIO is firing KEY_VOLUMEUP,
+                                   so PB7 fires when they press the
+                                   volume rocker centre)
+
+    "Brightness up tilt"           decreases system volume
+                                   (i.e. some GPIO is firing KEY_VOLUMEDOWN,
+                                   so PA0 fires when they press the
+                                   brightness rocker UP)
+
+This contradicts test 1.  Either:
+
+    (A) The physical actions the user labelled in test 1 don't
+        correspond to what they label the same way today.  The
+        rockers are small and ambiguous to feel: pushing "up" on a
+        rocker often partially engages a centre switch; pushing
+        "centre" partially engages an edge switch.
+    (B) The rockers have only 1 or 2 distinct switches each, not 3.
+        What we believed were three separate physical actions might
+        be just one (or two) reachable by different finger positions.
+    (C) The rockers are on different GPIOs than the BSP suggests
+        (i.e. PA2/PA4 are not wired at all on RPPocket; the brightness
+        rocker uses GPIOs we haven't enumerated).
+
+We DO NOT know which of A, B, C is correct.
+
+Open follow-up
+--------------
+The user needs to do a CLEAR-LABEL re-test that pins the physical
+action to the GPIO unambiguously:
+
+    1. Push only on the UPPER edge of the volume rocker.
+       What does the system do?
+    2. Push only on the LOWER edge of the volume rocker.
+       What does the system do?
+    3. Push STRAIGHT IN on the middle of the volume rocker.
+       What does the system do?
+    4-6. Same three actions for the brightness rocker.
+
+With the current DTS mapping, the visible reaction tells us the GPIO:
+
+    "system volume goes UP"        the GPIO is gpio3 PB7   (KEY_VOLUMEUP)
+    "system volume goes DOWN"      the GPIO is gpio2 PA0   (KEY_VOLUMEDOWN)
+    "screen brightness changes"    the GPIO is gpio3 PB2 or gpio2 PA2
+                                   (KEY_BRIGHTNESSUP / DOWN; userspace
+                                   may not bind these to anything visible)
+    "nothing happens"              either gpio2 PA1 / PA4 (TRIGGER_HAPPY,
+                                   no userspace handler), OR no GPIO
+                                   fired at all (the action is not
+                                   wired to anything we listen on)
+
+Once we have those 6 visible reactions reliably reported, finalising
+the rocker mapping is a 5-minute DTS edit.
+
+Things we already tried that ruled out classes of bugs
+-------------------------------------------------------
+    - Pinctrl is correctly muxing all 6 candidate pins to GPIO with
+      pull-up.  Verified at runtime via /sys/kernel/debug/gpio output
+      (all 6 lines listed as 'in hi IRQ ACTIVE LOW').
+    - All 18 GPIOs request IRQs; gpio-keys is the registered device.
+    - The autostart hook's evtest --grab was confirmed as a
+      DIFFERENT bug (it blocked ROCKNIX from reading buttons during
+      the first ~2.5 minutes of boot).  Removed in commit b03b770f51.
+    - We are NOT looking at the amux ADC.  The factory joypad driver
+      uses amux only for analog-stick X/Y axes; rocker BUTTONS are
+      plain GPIOs.
+
+What is definitely not the answer
+---------------------------------
+    - "Just use the odroidgo3-joypad driver."  That driver reads the
+      same 6 GPIOs the same way; it would not produce different
+      events.
+
+Where to look if you pick this up
+---------------------------------
+    debug/capture.out                most recent test capture (only
+                                     press-down 'value 1' events)
+    debug/post.out                   full post.sh dump from the last
+                                     run, including pinmux and gpio
+                                     state at boot
+    /tmp/claude/stock004.dts         decompiled BSP DTB (re-extract
+                                     from images/extracted/v1.0.img
+                                     if missing)
+
+Honest assessment
+-----------------
+This is the only piece blocking the port.  If hypothesis B is right
+(rockers have fewer switches than expected), we can ship as-is with
+just 4 keycodes assigned and call the others 'reserved'.

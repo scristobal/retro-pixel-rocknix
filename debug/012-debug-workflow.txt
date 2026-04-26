@@ -1,0 +1,163 @@
+012 - DEBUG WORKFLOW
+==============================================================
+
+We have no serial console on this device (no break-out for UART2),
+so all debug data has to land on the SD card and be read back from
+the host afterwards.  Two scripts in this directory orchestrate the
+cycle:
+
+    debug/pre.sh    runs on the HOST before flashing/booting
+    debug/post.sh   runs on the HOST after pulling the SD back out
+
+Both must run as root because they mount block devices.
+
+pre.sh
+------
+Two modes.
+
+    sudo ./debug/pre.sh
+        Just refreshes debug hooks on an already-flashed SD.  Mounts
+        the storage partition, drops the latest /storage/.config/autostart/
+        script and journald-persistence config, copies any *.gb / *.nes
+        / etc. from the debug/ directory onto /storage/games-internal/
+        roms/, then unmounts.
+
+    sudo ./debug/pre.sh --flash
+        Same as above, plus flashes the newest target/...-a.img.gz to
+        the SD with dd, pre-grows the storage partition with parted+
+        resize2fs, and overlays extlinux.conf.rppocket if present.
+
+Default device is /dev/sdd.  Override with positional /dev/sdX.
+
+What pre.sh installs on the SD's storage partition
+--------------------------------------------------
+    /storage/.cache/journald.conf.d/persist.conf
+        Storage=persistent + ForwardToConsole=yes + 64M max use.
+        Enables journal-on-disk so we can read the FULL kernel +
+        userspace journal back later.  This only takes effect from
+        the boot AFTER pre.sh installs it, so the FIRST boot's
+        journal is in the live ramdisk only.
+
+    /storage/.config/autostart/000-rppocket-debug.sh
+        Runs near the end of ROCKNIX bootup, dumps a structured
+        snapshot of:
+            - date / uname / device-tree compatible
+            - DRM / mali / lsmod
+            - systemd failed units
+            - ALSA cards + amixer state
+            - SARADC raw channel values (for hwrev verification)
+            - /sys/kernel/debug/pinctrl/*/pinmux-pins (gpio2/gpio3)
+            - /sys/kernel/debug/gpio (all banks)
+            - /proc/bus/input/devices
+            - /proc/interrupts
+        ... to /flash/rppocket-debug.txt, then schedules a delayed
+        capture 45 s later for sway / weston / emustation status,
+        backlight values, regulator summary and a brightness-blink
+        experiment.  Output goes to /flash/rppocket-late.txt and
+        /flash/dmesg-late.txt.
+
+    /storage/games-internal/roms/<system>/<rom>
+        For every recognised ROM extension in this debug/ directory,
+        the file is copied into the right system folder.  ROCKNIX
+        bind-mounts /storage/games-internal/roms over /storage/roms
+        at boot, so files MUST go through games-internal — anything
+        written directly to /storage/roms is masked at boot.
+
+post.sh
+-------
+    sudo ./debug/post.sh
+        Mounts the SD's boot partition (read-only by intent), prints
+        the contents of all the *.txt files pre.sh's autostart hook
+        produced, plus the u-boot-legacy error.log if present.  Greps
+        the dmesg / journalctl files for panel / DSI / DRM / mali /
+        sway / weston / failed / error lines and shows the matches.
+        Also surfaces evtest captures if the autostart hook was set
+        to record any (the grab-based capture is currently disabled).
+
+        Then mounts the storage partition and prints the persistent
+        journal if one is present.
+
+End-to-end cycle
+----------------
+    1. Make a DTS / patch / quirk change in projects/ROCKNIX/...
+    2. cd /home/samu/repos/others/ROCKNIX-rppocket && make docker-RK3326
+       (1-2 min incremental, with ccache warm)
+    3. sudo ./debug/pre.sh --flash /dev/sdX
+       Use --flash only when the changed image/rootfs must be written
+       to the SD, or when clean first-boot storage state matters.
+       If only the debug hook or local ROM copy changed, use:
+           sudo ./debug/pre.sh /dev/sdX
+    4. Insert SD, power on RPPocket, wait ~3 min
+    5. Long-press power to shut down (or, depending on what we changed,
+       observe behaviour first)
+    6. Pull SD, plug into host
+    7. sudo ./debug/post.sh /dev/sdX > debug/post.out
+    8. Tell the agent that debug/post.out has been updated
+    9. Agent reads debug/post.out, updates current_state.txt or topic
+       notes only with current state / stable conclusions, then
+       decides next change
+    10. goto 1
+
+Agent handoff rule
+------------------
+Commit messages carry the detailed per-change debug log.  The debug
+notes in this directory carry current state and stable conclusions.
+See 013-agent-workflow.txt for the full rules:
+
+    - commits stay on retropixel-pocket-support, not next
+    - commit messages record what changed and why
+    - debug/current_state.txt records what works, what does not, and
+      what should be tested next
+    - topic debug/*.txt files record durable findings only
+    - the agent asks for pre.sh --flash only when necessary
+    - the user runs post.sh redirected to debug/post.out
+    - the next iteration starts by reading debug/post.out
+
+Capture artefacts on the boot partition
+---------------------------------------
+After a run, /flash on the SD will contain:
+
+    rppocket-debug.txt          early snapshot
+    rppocket-late.txt           snapshot at boot+45s
+    dmesg-boot.txt              full kernel ring buffer at autostart fire
+    dmesg-late.txt              full ring buffer at boot+45s
+    journalctl-boot.txt         full systemd journal at autostart fire
+    journalctl-late.txt         full journal at boot+45s
+    lsmod.txt                   loaded modules
+    fs-resize.log               first-boot partition resize record
+    error.log                   u-boot-legacy errors (if any)
+
+post.sh prints the summary; the full files stay on the SD until
+overwritten by the next run (pre.sh wipes them at start of a new run).
+
+Things to know about the autostart hook
+---------------------------------------
+1. /flash is mounted RO by default on ROCKNIX.  The autostart hook
+   does mount -o remount,rw /flash before writing, then remount,ro at
+   the end.  The 45-second-delayed late capture follows the same
+   pattern.  This is why we can't just write directly without the
+   remount.
+
+2. The hook runs from /storage/.config/autostart/, which ROCKNIX's
+   /usr/bin/autostart enumerates alphabetically and runs sequentially
+   AS PART OF rocknix.target.  If rocknix.target never activates
+   (because graphical.target didn't settle), the hook never runs.
+   In that failure mode, persistent journald is the only data path.
+
+3. The hook does NOT use evtest --grab anymore.  An earlier iteration
+   did, and that exclusively claimed the input device for 120 s,
+   making EmulationStation see "no buttons" for the first two and a
+   half minutes of every boot.  Removed in commit b03b770f51.
+
+4. Game-list cache: if EmulationStation has run before and you're
+   adding a new ROM, ES may have cached "no GB system".  After the
+   first boot with a new ROM you may need to "Quit / Restart
+   EmulationStation" from the ES menu.
+
+Resetting between debug sessions
+--------------------------------
+The cleanest reset is a fresh dd via 'pre.sh --flash'.  That zeroes
+the storage partition, so any /storage/.config files are gone — fresh
+ROCKNIX state every time.  This is also the recommended pattern when
+testing changes to default behaviour, so /storage state from a prior
+run doesn't mask the change.

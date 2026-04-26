@@ -1,0 +1,143 @@
+CURRENT STATE
+==============================================================
+As of: 2026-04-26
+Build: target/ROCKNIX-RK3326.aarch64-20260426-a.img.gz
+Branch: retropixel-pocket-support
+HEAD : debug: document agent workflow and current branch state
+
+Git branch layout
+-----------------
+[OK]   The RPPocket work has been moved off local 'next' and onto the
+       topic branch:
+
+           retropixel-pocket-support
+
+[OK]   The ROCKNIX upstream remote is configured:
+
+           upstream = git@github.com:ROCKNIX/distribution.git
+
+[OK]   Local 'next', origin/next and upstream/next are aligned at:
+
+           7f8c8f83ea  Merge pull request #2596 from ROCKNIX/auto-pr-branch
+
+[NOTE] The topic branch history was rewritten so commit messages carry
+       the detailed per-change debug log.  Force-push
+       retropixel-pocket-support when ready to update the fork.
+
+Agent workflow
+--------------
+[RULE] Read 013-agent-workflow.txt before making changes.
+
+[RULE] All RPPocket commits stay on retropixel-pocket-support.  Do not
+       commit RPPocket work on next.
+
+[RULE] Commit messages carry the detailed per-change debug log:
+       observed problem, hypothesis, change made, and test requested.
+
+[RULE] debug/*.txt files are not a running diary.  Keep them as current
+       state and stable findings: what works, what does not, open
+       questions, and the next concrete test.
+
+[RULE] After a change, ask the user to run debug/pre.sh with --flash
+       only if a fresh image/rootfs is required.  Otherwise ask for
+       plain debug/pre.sh.
+
+[RULE] After device testing, expect the user to run:
+
+           sudo ./debug/post.sh /dev/sdX > debug/post.out
+
+       Then read debug/post.out before the next hardware-facing edit.
+
+Stuff that works
+----------------
+[OK]   Two-stage u-boot reliably picks the rk3326-funnyplaying-
+       rppocket.dtb based on SARADC channel-0 fingerprint.
+[OK]   Mainline kernel 6.12.79 boots all the way to graphical.target
+       on cold power-on.
+[OK]   Display lights up correctly: rotation = 0, JDI panel init
+       sequence completes, backlight LED rail energised.
+[OK]   Audio: rk817 -> NS4150 amp -> internal speaker plays sound.
+       Headphone jack hotplug not exhaustively tested but no reason
+       to suspect it doesn't work.
+[OK]   Power-up GPIO gates (LCD VSPN, LCD VCC5V, NS4150 amp enable)
+       are hogged HIGH at gpio-controller probe.
+[OK]   12 standard buttons fire correct keycodes:
+           D-pad U/D/L/R   ABXY   L/R   SELECT   START
+       Confirmed via evtest captures on event2 (gpio-keys node).
+       EmulationStation responds to all of them in-menu.
+[OK]   SD-card boot, partition resize on first boot, extlinux config.
+[OK]   Game Boy emulator picks up ROMs deposited via debug/pre.sh.
+       Verified with Super Mario Land (USA) (Rev-A).gb in the
+       /storage/games-internal/roms/gb/ folder.
+[OK]   ROCKNIX device-quirks system applies the FunnyPlaying-specific
+       audio routing (Playback Mux SPK -> HP swap) and the 100%
+       Master gain at boot.
+
+Stuff that's broken or unfinished
+---------------------------------
+[BUG]  Volume and brightness rockers are mismapped.  Each has 3
+       physical actions (up tilt / down tilt / centre press).  4 of
+       the 6 actions fire SOMETHING in repeated tests, but the
+       physical action -> GPIO mapping is not consistent between
+       test sessions and real-use feedback.  Specifically: gpio2 PA2
+       and PA4 never fired any event in two consecutive captures.
+       See 011-rocker-mystery.txt for the full saga and the
+       outstanding 6-action test that would resolve it.
+
+[TODO] Wi-Fi.  The device has a Realtek RTL8188EUS USB Wi-Fi module.
+       The mainline 'r8188eu' staging driver should cover it, but is
+       not currently included in our linux.aarch64.conf.  Without
+       Wi-Fi, the device has no off-cable network access and we have
+       no way to ssh in for live debugging — every diagnostic round
+       requires a flash + power cycle + SD pull.
+
+[TODO] Power slider.  The hardware-side slider is wired through
+       rk805_pwrkey (verified via /proc/bus/input/devices); a long
+       slide presumably triggers PMIC poweroff.  Behaviour beyond
+       'pwrkey' has not been verified, and there is no investigation
+       yet of whether ROCKNIX's expected suspend/resume hooks fire.
+
+[TODO] Battery LED.  The 001-device_config quirk sets
+       DEVICE_BATTERY_LED_STATUS="false" because the LED behaviour
+       on RPPocket has not been characterised.  The device has a
+       red+green dual LED; only red has been seen lit (at boot).
+
+[TODO] Test additional emulators.  Only Game Boy has been verified
+       end-to-end (system shows up + ROM list populates).  No game
+       has been launched into RetroArch yet.
+
+Open questions
+--------------
+1.  Are the rocker switches actually wired to gpio2 PA2 and PA4 on
+    this device, or is the BSP's mention of those GPIOs a leftover
+    from the RG351MP design that does not apply to RPPocket
+    physically?  Concrete way to find out: probe the rocker pins
+    with a multimeter while a switch is held.  Without that, see
+    011-rocker-mystery.txt for the next-best diagnostic step.
+
+2.  Does the brightness rocker actually have three distinct
+    switches, or is the user describing a 2-switch component?
+    Resolved by the same physical inspection or by the 6-action
+    re-test in 011.
+
+How to resume work
+------------------
+1.  Boot the device with the current image and try the 6 rocker
+    actions described at the bottom of 011-rocker-mystery.txt.
+    Capture the visible reaction of each.
+2.  Edit the rocker entries in the gpio-keys block of
+    rk3326-funnyplaying-rppocket.dts to match what was learned.
+3.  Rebuild with make docker-RK3326, flash with debug/pre.sh --flash.
+4.  Verify rockers behave as expected.
+5.  Add r8188eu to linux.aarch64.conf and to ADDITIONAL_DRIVERS
+    if needed; rebuild; verify Wi-Fi.
+6.  Keep commits on retropixel-pocket-support.  Rebase or merge over
+    upstream/next when needed, then push the topic branch to origin
+    and clean up the commit log if helpful for a future upstream PR.
+
+Don't reinvent
+--------------
+Read 004-bsp-as-reference.txt before diving back into hardware
+mysteries.  The factory firmware and source got this device working
+once; almost every "this should be obvious but isn't" question on
+this port has its answer in extpackage/linux-kernel-rppocket/.
