@@ -60,6 +60,6 @@ Document structure
     009-audio.txt              codec routing + amp enable
     010-input-mapping.txt      gpio-keys + pinctrl
     011-rocker-mystery.txt     unsolved rocker mapping
-    012-debug-workflow.txt     pre.sh / post.sh tooling
+    012-debug-workflow.txt     pre.sh tooling + direct SD log inspection
     013-agent-workflow.txt     rules for agents changing/debugging this port
     current_state.txt          what works / what doesn't, today

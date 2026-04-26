@@ -34,28 +34,28 @@ Agent workflow
 [RULE] Commit messages carry the detailed per-change debug log:
        observed problem, hypothesis, change made, and test requested.
 
-[RULE] debug/*.txt files are not a running diary.  Keep them as current
-       state and stable findings: what works, what does not, open
-       questions, and the next concrete test.
+[RULE] debug/current_state.txt is not a running diary.  Keep it as
+       current state and stable findings: what works, what does not,
+       open questions, and the next concrete test.  Use topic-specific
+       decision logs, such as 014-wifi-decision-log.txt, for active
+       unresolved trial-and-error.
 
 [RULE] After a change, ask the user to run debug/pre.sh with --flash
        only if a fresh image/rootfs is required.  Otherwise ask for
        plain debug/pre.sh.
 
-[RULE] After device testing, expect the user to run:
-
-           sudo ./debug/post.sh /dev/sdX > debug/post.out
-
-       Then read debug/post.out before the next hardware-facing edit.
+[RULE] After device testing, expect the user to insert the SD into the
+       host and tell the agent it is inserted.  The agent should mount
+       the SD and inspect the full boot/storage logs directly before
+       the next hardware-facing edit.
 
 [OK]   debug/pre.sh creates /storage/.cache/debug.rocknix and
-       /storage/.cache/log/journal.  Confirmed in debug/post.out:
-       post.sh found the persistent journal at
-       /mnt/rockstore/.cache/log/journal without a 'debugging'
+       /storage/.cache/log/journal.  Confirmed from mounted storage
+       that persistent logs are available without a 'debugging'
        kernel command-line flag.
 [OK]   The shared RK3326 extlinux.conf still contains
-       FDTOVERLAYS /overlays/mipi-panel.dtbo.  debug/post.out from
-       the rebuilt image confirms RPPocket boot succeeds with that
+       FDTOVERLAYS /overlays/mipi-panel.dtbo.  Mounted boot logs from
+       the rebuilt image confirm RPPocket boot succeeds with that
        line present: FunnyPlaying RetroPixel Pocket DTB, DSI-1
        connected/enabled at 720x720, sway active, and no failed units
        in the late capture.  The old
@@ -104,7 +104,7 @@ Stuff that works
            gpio3 PD3 = KEY_VOLUMEUP
            gpio3 PC4 = KEY_VOLUMEDOWN
        A rebuilt/flashed image using those pins was confirmed by the
-       user.  debug/post.out from that image shows the gpio-keys lines
+       user.  Mounted boot logs from that image show the gpio-keys lines
        registered as VOL-UP on gpio3 PD3 and VOL-DOWN on gpio3 PC4.
 [OK]   RetroArch/libretro input is playable with the gpio-keys
        autoconfig.  EmulationStation sees the built-in controls and
@@ -134,12 +134,38 @@ Stuff that's broken or unfinished
        BTN_TRIGGER_HAPPY1 but has no visible action.  This is expected
        for now because ROCKNIX does not bind it to a user action.
 
-[TODO] Wi-Fi.  The device has a Realtek RTL8188EUS USB Wi-Fi module.
-       The mainline 'r8188eu' staging driver should cover it, but is
-       not currently included in our linux.aarch64.conf.  Without
-       Wi-Fi, the device has no off-cable network access and we have
-       no way to ssh in for live debugging — every diagnostic round
-       requires a flash + power cycle + SD pull.
+[TEST] Wi-Fi.  ROCKNIX settings shows Wi-Fi, but no test has produced
+       a wlan interface, rfkill device, iw PHY, USB Wi-Fi child, or
+       mmc1:0001 SDIO function yet.
+
+       Stable findings:
+           - The clean RPPocket DTS based directly on rk3326.dtsi
+             boots without user-observed regressions.  Mounted SD logs
+             confirm the running model is FunnyPlaying RetroPixel
+             Pocket and the selected DTB is rk3326-funnyplaying-
+             rppocket.dtb, not an RG351/Odroid DTB.
+           - USB root hubs enumerate, but Wi-Fi has not appeared on
+             USB.
+           - ff380000.mmc can probe as mmc1, but the card/device has
+             not responded.
+           - Factory v1.1.3 points strongly at Realtek SDIO:
+                 rtl8189fs/wlan.ko   alias sdio:c*v024CdF179*
+                 rtl8189es/8189es.ko alias sdio:c*v024Cd8179*
+           - ROCKNIX 6.12.79 does not currently include RTL8189FS/ES
+             SDIO support, so a driver port/package may still be
+             needed after bus enumeration works.
+
+       Previous Wi-Fi trial history lives in:
+
+           debug/014-wifi-decision-log.txt
+
+       Clean DTS validation is closed in:
+
+           debug/015-clean-dts-decision-log.txt
+
+       Active Wi-Fi work has restarted from scratch in:
+
+           debug/016-wifi-from-scratch.txt
 
 [TODO] Power slider.  The hardware-side slider is wired through
        rk805_pwrkey (verified via /proc/bus/input/devices); a long
@@ -173,8 +199,10 @@ Open questions
 
 How to resume work
 ------------------
-1.  Add r8188eu to linux.aarch64.conf and to ADDITIONAL_DRIVERS
-    if needed; rebuild; verify Wi-Fi.
+1.  Continue Wi-Fi from debug/016-wifi-from-scratch.txt.  Start from
+    the verified clean RPPocket DTB baseline and prove the Wi-Fi chip,
+    firmware, power/reset, and SDIO requirements from factory sources
+    and mounted SD logs before making another hardware-facing change.
 2.  If brightness is revisited, decide whether to add a ROCKNIX
     userspace binding for PA0/PA1/PB2 or keep the vendor-style
     Fn + volume model and investigate why gpio2 PA4 has not fired.

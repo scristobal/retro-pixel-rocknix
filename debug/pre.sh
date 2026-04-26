@@ -11,14 +11,17 @@
 # With --flash, pre.sh also
 #   1. gunzips the newest ROCKNIX-*.aarch64-*-a.img.gz from ../target/
 #      and dd's it onto the SD first,
-#   2. renames extlinux.conf.rppocket -> extlinux.conf so u-boot selects
-#      our DTB instead of falling through to the OGA default.
+#   2. resizes the storage partition so debug hooks and first-boot
+#      setup have enough space.
 #
 # Usage:
 #   sudo ./pre.sh                    just (re-)install debug hooks
-#   sudo ./pre.sh --flash            flash newest image + rename + hooks
+#   sudo ./pre.sh --flash            flash newest image + hooks
 #   sudo ./pre.sh --flash /dev/sdX   pick a non-default SD device
 #   sudo ./pre.sh /dev/sdX
+#
+# After device testing, insert the SD into the host and tell the agent.
+# The agent mounts the SD and reads the full boot/storage logs directly.
 
 set -euo pipefail
 
@@ -200,6 +203,48 @@ mount -o remount,rw "$OUT" 2>/dev/null
 	echo "=== lsmod | panel/drm/mali ==="
 	lsmod | grep -iE 'panel|drm|mali|panfrost|rockchip' 2>&1
 
+	echo "=== lsmod | wifi/usb networking ==="
+	lsmod | grep -iE 'rtl|rtw|cfg80211|mac80211|80211|usbnet|rndis|cdc' 2>&1
+
+	echo "=== USB devices ==="
+	for d in /sys/bus/usb/devices/* ; do
+		[ -d "$d" ] || continue
+		echo "--- $d ---"
+		for f in idVendor idProduct manufacturer product serial busnum devnum speed bDeviceClass bDeviceSubClass bDeviceProtocol driver ; do
+			[ -e "$d/$f" ] || continue
+			printf '%-22s = %s\n' "$f" "$(cat "$d/$f" 2>/dev/null)"
+		done
+		[ -L "$d/driver" ] && echo "driver-link = $(readlink "$d/driver" 2>/dev/null)"
+	done
+
+	echo "=== MMC/SDIO devices ==="
+	for d in /sys/bus/mmc/devices/* /sys/class/mmc_host/mmc* ; do
+		[ -e "$d" ] || continue
+		echo "--- $d ---"
+		for f in type name modalias vendor device oemid manfid date fwrev hwrev serial uevent ; do
+			[ -e "$d/$f" ] || continue
+			printf '%-22s = %s\n' "$f" "$(tr '\n' ' ' <"$d/$f" 2>/dev/null)"
+		done
+		[ -L "$d/driver" ] && echo "driver-link = $(readlink "$d/driver" 2>/dev/null)"
+	done
+
+	echo "=== network interfaces ==="
+	for n in /sys/class/net/* ; do
+		[ -d "$n" ] || continue
+		echo "--- $n ---"
+		for f in address operstate carrier type ; do
+			[ -e "$n/$f" ] || continue
+			printf '%-22s = %s\n' "$f" "$(cat "$n/$f" 2>/dev/null)"
+		done
+		[ -L "$n/device/driver" ] && echo "driver-link = $(readlink "$n/device/driver" 2>/dev/null)"
+	done
+
+	echo "=== rfkill ==="
+	rfkill list 2>&1
+
+	echo "=== iw dev ==="
+	iw dev 2>&1
+
 	echo "=== systemd failed units ==="
 	systemctl --no-pager --failed 2>&1
 
@@ -351,6 +396,45 @@ sync
 		echo "=== regulator summary ==="
 		cat /sys/kernel/debug/regulator/regulator_summary 2>/dev/null | head -80
 
+		echo "=== USB / Wi-Fi dmesg lines ==="
+		dmesg | grep -iE 'usb|mmc|sdio|rtl|rtw|8188|8189|8723|wifi|wlan|cfg80211|firmware|regulatory' 2>&1 | tail -220
+
+		echo "=== USB devices late ==="
+		for d in /sys/bus/usb/devices/* ; do
+			[ -d "$d" ] || continue
+			echo "--- $d ---"
+			for f in idVendor idProduct manufacturer product serial busnum devnum speed bDeviceClass bDeviceSubClass bDeviceProtocol driver ; do
+				[ -e "$d/$f" ] || continue
+				printf '%-22s = %s\n' "$f" "$(cat "$d/$f" 2>/dev/null)"
+			done
+			[ -L "$d/driver" ] && echo "driver-link = $(readlink "$d/driver" 2>/dev/null)"
+		done
+
+		echo "=== MMC/SDIO devices late ==="
+		for d in /sys/bus/mmc/devices/* /sys/class/mmc_host/mmc* ; do
+			[ -e "$d" ] || continue
+			echo "--- $d ---"
+			for f in type name modalias vendor device oemid manfid date fwrev hwrev serial uevent ; do
+				[ -e "$d/$f" ] || continue
+				printf '%-22s = %s\n' "$f" "$(tr '\n' ' ' <"$d/$f" 2>/dev/null)"
+			done
+			[ -L "$d/driver" ] && echo "driver-link = $(readlink "$d/driver" 2>/dev/null)"
+		done
+
+		echo "=== network interfaces late ==="
+		for n in /sys/class/net/* ; do
+			[ -d "$n" ] || continue
+			echo "--- $n ---"
+			for f in address operstate carrier type ; do
+				[ -e "$n/$f" ] || continue
+				printf '%-22s = %s\n' "$f" "$(cat "$n/$f" 2>/dev/null)"
+			done
+			[ -L "$n/device/driver" ] && echo "driver-link = $(readlink "$n/device/driver" 2>/dev/null)"
+		done
+
+		echo "=== iw dev late ==="
+		iw dev 2>&1
+
 		echo "=== GPIO (looking for panel reset, backlight en) ==="
 		cat /sys/kernel/debug/gpio 2>/dev/null | head -80
 
@@ -444,7 +528,7 @@ umount "$BOOT_MNT"
 
 echo ">>> OK. Insert SD into RPPocket and power on."
 echo ">>> Wait ~3 min (or until the blinking LED stops changing cadence),"
-echo ">>> power off with a long press, pull the SD, then run post.sh."
+echo ">>> power off with a long press, pull the SD, and tell the agent it is inserted."
 echo
 if (( FLASH )); then
 	echo "    (Flashed from $(basename "$IMG"))"

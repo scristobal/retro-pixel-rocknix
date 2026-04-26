@@ -34,7 +34,7 @@ Test 1 — captures during boot (commits 4d983b6f34 + 3d6450b517)
 ----------------------------------------------------------------
 We ran 'evtest --grab' for 60s (later 120s) on every /dev/input/event*
 during boot, asked the user to press each rocker action in a
-documented order, and copied the logs out via post.sh.
+documented order, and read the captured logs back from the SD.
 
 Two consecutive captures both produced this pattern (filtered to
 press-down events only):
@@ -170,7 +170,7 @@ After rebuilding with the vendor DTS volume pins, the user confirmed:
     Volume centre press does nothing.
     Brightness rocker does nothing visibly.
 
-debug/post.out from that image confirms gpio-keys registered:
+The boot logs from that image confirm gpio-keys registered:
 
     gpio3 PD3 -> VOL-UP
     gpio3 PC4 -> VOL-DOWN
@@ -225,9 +225,7 @@ Where to look if you pick this up
 ---------------------------------
     debug/capture.out                most recent test capture (only
                                      press-down 'value 1' events)
-    debug/post.out                   full post.sh dump from the last
-                                     run, including pinmux and gpio
-                                     state at boot
+    Mounted boot logs                pinmux and gpio state at boot
     /tmp/claude/stock004.dts         decompiled BSP DTB (re-extract
                                      from images/extracted/v1.0.img
                                      if missing)

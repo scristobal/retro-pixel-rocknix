@@ -1,0 +1,98 @@
+016 - WIFI FROM SCRATCH DECISION LOG
+==============================================================
+
+Purpose
+-------
+This file restarts RetroPixel Pocket Wi-Fi bring-up from a clean
+baseline.  Do not assume the board is RG351M, Odroid Go, or any other
+RK3326 handheld.  Use the verified RPPocket DTB, factory sources, and
+mounted SD logs as the primary evidence.
+
+Previous Wi-Fi history remains in:
+
+    debug/014-wifi-decision-log.txt
+
+The clean DTS validation is closed in:
+
+    debug/015-clean-dts-decision-log.txt
+
+Rules for each entry
+--------------------
+Each Wi-Fi experiment must record:
+
+    - date
+    - hypothesis
+    - evidence used before changing code
+    - code/image change
+    - exact test requested
+    - observed result from mounted SD logs
+    - decision / next step
+
+Workflow constraints
+--------------------
+Do not commit until the user manually confirms the flashed change
+worked and explicitly asks for a commit.  Build before each flash
+request.  Prompt the user to run pre.sh with --flash only when a new
+image or boot-critical artifact must be tested.  After testing, expect
+the user to reinsert the SD card; inspect mounted files directly.
+
+
+2026-04-26 - Fresh Wi-Fi baseline after clean DTS
+-------------------------------------------------
+Hypothesis:
+    Wi-Fi failure is not caused by accidentally booting an RG351/Odroid
+    DTB.  The next investigation should start from what the verified
+    RPPocket runtime state says about SDIO, power, firmware, and driver
+    probing.
+
+Evidence used before changing code:
+    User flashed the clean DTS image and reported:
+
+        - no regressions detected
+        - Wi-Fi still does not scan
+
+    Mounted SD verification from the tested card:
+
+        - booted model:
+          Machine model: FunnyPlaying RetroPixel Pocket
+        - kernel command line includes:
+          uboot.hwid_adc=a,rppocket
+        - SD DTB hash matches local build output:
+          f9d61f2053baf618d8712673673344145c2dec800a9f3ed1c0024c2e4d7b66b2
+        - decompiled RPPocket DTB contains:
+          compatible = "funnyplaying,rppocket", "rockchip,rk3326"
+          no wifi-pwrseq node
+          no non-removable flag on SDIO
+          SDIO at mmc@ff380000 with supports-sd and gpio3 PB6 card detect
+          vccio1/vccio2 supplied by vccio_sd
+          LDO_REG9 as vcc_wifi at 3.3V
+        - no mipi-panel.dtbo overlay exists on the boot partition, even
+          though extlinux references that optional path.
+
+    Current boot symptoms in returned logs:
+
+        - vcc_wifi is enabled at 3.3V
+        - mmc1 only shows low-speed bus attempts:
+          400 kHz, 300 kHz, 200 kHz, 100 kHz
+        - no successful SDIO child enumeration was observed
+        - no wlan interface / scan result was reported by the user
+
+Code/image change:
+    None.  This entry establishes the new baseline.
+
+Exact test requested:
+    None yet.
+
+Observed result from mounted SD logs:
+    Baseline recorded from the already returned SD card.
+
+Decision / next step:
+    Start by proving the Wi-Fi hardware identity and bus requirements
+    from factory sources and original images.  Focus on:
+
+        - which Wi-Fi chip/driver the factory image uses
+        - whether factory uses SDIO card-detect or non-removable
+        - whether a reset/enable GPIO exists outside the current SDIO
+          node
+        - whether firmware/NVRAM/calibration files differ from ROCKNIX
+        - whether ROCKNIX has the needed driver enabled and loading

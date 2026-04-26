@@ -3,13 +3,13 @@
 
 We have no serial console on this device (no break-out for UART2),
 so all debug data has to land on the SD card and be read back from
-the host afterwards.  Two scripts in this directory orchestrate the
-cycle:
+the host afterwards.  The host-side setup script orchestrates the
+first half of the cycle:
 
     debug/pre.sh    runs on the HOST before flashing/booting
-    debug/post.sh   runs on the HOST after pulling the SD back out
 
-Both must run as root because they mount block devices.
+It must run as root because it mounts block devices and may flash the
+SD card.
 
 pre.sh
 ------
@@ -69,19 +69,23 @@ What pre.sh installs on the SD's storage partition
         at boot, so files MUST go through games-internal — anything
         written directly to /storage/roms is masked at boot.
 
-post.sh
--------
-    sudo ./debug/post.sh
-        Mounts the SD's boot partition (read-only by intent), prints
-        the contents of all the *.txt files pre.sh's autostart hook
-        produced, plus the u-boot-legacy error.log if present.  Greps
-        the dmesg / journalctl files for panel / DSI / DRM / mali /
-        sway / weston / failed / error lines and shows the matches.
-        Also surfaces evtest captures if the autostart hook was set
-        to record any (the grab-based capture is currently disabled).
+Reading results back
+--------------------
+After a boot test, pull the SD and insert it into the host.  The agent
+should mount the partitions directly and inspect the full files rather
+than asking the user to create a summarized log file:
 
-        Then mounts the storage partition and prints the persistent
-        journal if one is present.
+    udisksctl mount -b /dev/sdX1
+    udisksctl mount -b /dev/sdX2
+
+Typical mount points are:
+
+    /run/media/$USER/ROCKNIX
+    /run/media/$USER/STORAGE
+
+The boot partition contains the structured captures and full dmesg /
+journal files.  The storage partition contains persistent logs under
+.cache/log/ and the installed autostart hook under .config/autostart/.
 
 End-to-end cycle
 ----------------
@@ -97,12 +101,12 @@ End-to-end cycle
     5. Long-press power to shut down (or, depending on what we changed,
        observe behaviour first)
     6. Pull SD, plug into host
-    7. sudo ./debug/post.sh /dev/sdX > debug/post.out
-    8. Tell the agent that debug/post.out has been updated
-    9. Agent reads debug/post.out, updates current_state.txt or topic
+    7. Tell the agent the SD is inserted
+    8. Agent mounts the SD, inspects the full logs / DTB directly,
+       updates current_state.txt or topic
        notes only with current state / stable conclusions, then
        decides next change
-    10. goto 1
+    9. goto 1
 
 Agent handoff rule
 ------------------
@@ -116,8 +120,9 @@ See 013-agent-workflow.txt for the full rules:
       what should be tested next
     - topic debug/*.txt files record durable findings only
     - the agent asks for pre.sh --flash only when necessary
-    - the user runs post.sh redirected to debug/post.out
-    - the next iteration starts by reading debug/post.out
+    - after testing, the user inserts the SD and tells the agent
+    - the next iteration starts by mounting the SD and reading the full
+      boot/storage logs directly
 
 Capture artefacts on the boot partition
 ---------------------------------------
@@ -133,8 +138,8 @@ After a run, /flash on the SD will contain:
     fs-resize.log               first-boot partition resize record
     error.log                   u-boot-legacy errors (if any)
 
-post.sh prints the summary; the full files stay on the SD until
-overwritten by the next run (pre.sh wipes them at start of a new run).
+These files stay on the SD until overwritten by the next run.  pre.sh
+wipes the stale boot-partition captures at the start of a new run.
 
 Things to know about the autostart hook
 ---------------------------------------

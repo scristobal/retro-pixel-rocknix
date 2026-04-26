@@ -20,27 +20,33 @@ before editing or committing.  If new upstream work is needed, update
 next from upstream/next first, then rebase or merge
 retropixel-pocket-support over it.
 
-Debug notes vs commit log
--------------------------
-Commit messages carry the per-change debug log.  Each hardware-facing
-commit should explain:
+Debug notes, decision logs, commit log
+--------------------------------------
+Commit messages carry the final per-change debug summary for committed
+work.  Each hardware-facing commit should explain:
 
     - the observed problem or new evidence
     - the hypothesis being tested
     - what changed
     - what the user should test next, if applicable
 
-The debug/*.txt files are NOT a running diary.  Keep them as compact
-handoff/reference material:
+The debug/*.txt files are not all the same kind of document:
 
     - current_state.txt records the latest known status: branch state,
       latest known good image, what works, what is broken, open
-      questions, and the next concrete test.
+      questions, and the next concrete test.  Update it only when a
+      result becomes accepted current project state, usually when a
+      tested change is ready to commit or has just been committed.
     - Topic notes record stable knowledge and conclusions: 005 for
       boot flow, 006 for DTS, 007 for panel, 008 for power, 009 for
       audio, 010/011 for input, 012 for debug tooling.
-    - Do not append blow-by-blow change logs to these files.  Put that
-      detail in the commit message.
+    - Decision logs record active trial-and-error for an unresolved
+      investigation.  For Wi-Fi, use 014-wifi-decision-log.txt.
+
+Do not append blow-by-blow experiment logs to current_state.txt.  Put
+active unresolved experiments in the relevant decision log, then
+collapse the final accepted outcome into current_state.txt and the
+commit message once the result is tested.
 
 Do not leave important reasoning only in chat.  The next agent should
 be able to recover the state from current_state.txt, the relevant
@@ -66,25 +72,38 @@ After a code change, decide whether the device must be reflashed:
     when the existing SD image is still valid and only the debug hook
     or local ROM copy needs refreshing.
 
-After the user boots and powers down the device, expect them to run:
+After the user boots and powers down the device, expect them to insert
+the SD into the host and tell you it is inserted.  Mount the SD and
+inspect the full captures directly:
 
-    sudo ./debug/post.sh /dev/sdX > debug/post.out
+    udisksctl mount -b /dev/sdX1
+    udisksctl mount -b /dev/sdX2
 
-The user should then tell the agent that debug/post.out is updated.
-Read debug/post.out before making the next hardware-facing change.
+Read the boot-partition captures and storage logs before making the
+next hardware-facing change.  Common paths are:
+
+    /run/media/$USER/ROCKNIX/dmesg-boot.txt
+    /run/media/$USER/ROCKNIX/dmesg-late.txt
+    /run/media/$USER/ROCKNIX/journalctl-boot.txt
+    /run/media/$USER/ROCKNIX/rppocket-debug.txt
+    /run/media/$USER/ROCKNIX/rppocket-late.txt
+    /run/media/$USER/ROCKNIX/rk3326-funnyplaying-rppocket.dtb
+    /run/media/$USER/STORAGE/.cache/log/
 
 Agent response pattern
 ----------------------
 For each hardware-facing iteration:
 
     1. Make the smallest code/docs change that tests one hypothesis.
-    2. Update current_state.txt or a topic note only if the current
-       project state or stable conclusions changed.
+    2. Append the experiment to the relevant decision log when the
+       work is still exploratory.  Update current_state.txt only if
+       the current project state or stable conclusions changed.
     3. Build if needed.
     4. Tell the user exactly which pre.sh command to run.
-    5. Wait for the user to update debug/post.out.
-    6. Read debug/post.out and update current_state.txt / topic notes
-       only with the resulting current state and durable conclusions.
+    5. Wait for the user to insert the SD after device testing.
+    6. Mount the SD, read full logs/DTB, and append the result to the
+       decision log.  Update current_state.txt / topic notes only with
+       accepted current state and durable conclusions.
     7. Only then decide the next change.
     8. When committing, put the detailed debug log for the change in
        the commit message.
