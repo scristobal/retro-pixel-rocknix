@@ -1,0 +1,200 @@
+From: RetroPixel Pocket bring-up
+Subject: [PATCH] usb: add temporary rppocket Wi-Fi enumeration instrumentation
+
+Add focused boot-time logging around the Rockchip USB2PHY and DWC2 host
+startup paths. This is temporary bring-up instrumentation used to compare
+ROCKNIX against the working vendor kernel for the RetroPixel Pocket internal
+RTL8188EUS Wi-Fi device.
+
+---
+ drivers/phy/rockchip/phy-rockchip-inno-usb2.c | 72 +++++++++++++++++++
+ drivers/usb/dwc2/core.c                       | 18 +++++
+ drivers/usb/dwc2/hcd.c                        | 14 ++++
+ 3 files changed, 104 insertions(+)
+
+diff --git a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+--- a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
++++ b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+@@ -291,6 +291,44 @@ static inline bool property_enabled(struct regmap *base,
+ 	return tmp != reg->disable;
+ }
+ 
++static void rppocket_usb2phy_dbg(struct rockchip_usb2phy *rphy,
++				 struct rockchip_usb2phy_port *rport,
++				 const char *where)
++{
++	struct regmap *base = get_reg_base(rphy);
++	const struct rockchip_usb2phy_port_cfg *cfg = rport->port_cfg;
++	unsigned int phy_sus = 0;
++	unsigned int bvalid_en = 0;
++	unsigned int bvalid_st = 0;
++	unsigned int bvalid_clr = 0;
++	unsigned int ls_en = 0;
++	unsigned int ls_st = 0;
++	unsigned int ls_clr = 0;
++	int ret_phy_sus;
++
++	ret_phy_sus = regmap_read(base, cfg->phy_sus.offset, &phy_sus);
++
++	if (cfg->bvalid_det_en.offset)
++		regmap_read(rphy->grf, cfg->bvalid_det_en.offset, &bvalid_en);
++	if (cfg->bvalid_det_st.offset)
++		regmap_read(rphy->grf, cfg->bvalid_det_st.offset, &bvalid_st);
++	if (cfg->bvalid_det_clr.offset)
++		regmap_read(rphy->grf, cfg->bvalid_det_clr.offset, &bvalid_clr);
++	if (cfg->ls_det_en.offset)
++		regmap_read(rphy->grf, cfg->ls_det_en.offset, &ls_en);
++	if (cfg->ls_det_st.offset)
++		regmap_read(rphy->grf, cfg->ls_det_st.offset, &ls_st);
++	if (cfg->ls_det_clr.offset)
++		regmap_read(rphy->grf, cfg->ls_det_clr.offset, &ls_clr);
++
++	dev_info(rphy->dev,
++		 "RPPDBG usb2phy %s port=%u mode=%d suspended=%d phy_sus@0x%04x[%u:%u] ret=%d raw=0x%08x bvalid(en/st/clr)=0x%08x/0x%08x/0x%08x ls(en/st/clr)=0x%08x/0x%08x/0x%08x\n",
++		 where, rport->port_id, rport->mode, rport->suspended,
++		 cfg->phy_sus.offset, cfg->phy_sus.bitend, cfg->phy_sus.bitstart,
++		 ret_phy_sus, phy_sus, bvalid_en, bvalid_st, bvalid_clr,
++		 ls_en, ls_st, ls_clr);
++}
++
+ static int rockchip_usb2phy_reset(struct rockchip_usb2phy *rphy)
+ {
+ 	int ret;
+@@ -475,6 +513,10 @@ static int rockchip_usb2phy_init(struct phy *phy)
+ 
+ 	mutex_lock(&rport->mutex);
+ 
++	rppocket_usb2phy_dbg(rphy, rport, "init-enter");
++	dev_info(rphy->dev, "RPPDBG usb2phy init port=%u mode=%d\n",
++		 rport->port_id, rport->mode);
++
+ 	if (rport->port_id == USB2PHY_PORT_OTG) {
+ 		if (rport->mode != USB_DR_MODE_HOST &&
+ 		    rport->mode != USB_DR_MODE_UNKNOWN) {
+@@ -547,6 +589,9 @@ static int rockchip_usb2phy_init(struct phy *phy)
+ 	}
+ 
+ out:
++	rppocket_usb2phy_dbg(rphy, rport, "init-exit");
++	dev_info(rphy->dev, "RPPDBG usb2phy init-exit port=%u ret=%d\n",
++		 rport->port_id, ret);
+ 	mutex_unlock(&rport->mutex);
+ 	return ret;
+ }
+@@ -563,6 +608,8 @@ static int rockchip_usb2phy_power_on(struct phy *phy)
+ 	if (!rport->suspended)
+ 		return 0;
+ 
++	rppocket_usb2phy_dbg(rphy, rport, "power-on-before");
++
+ 	ret = clk_prepare_enable(rphy->clk480m);
+ 	if (ret)
+ 		return ret;
+@@ -589,6 +636,9 @@ static int rockchip_usb2phy_power_on(struct phy *phy)
+ 	usleep_range(1500, 2000);
+ 
+ 	rport->suspended = false;
++	rppocket_usb2phy_dbg(rphy, rport, "power-on-after");
++	dev_info(rphy->dev, "RPPDBG usb2phy power-on port=%u ret=0\n",
++		 rport->port_id);
+ 	return 0;
+ }
+ 
+@@ -604,6 +654,8 @@ static int rockchip_usb2phy_power_off(struct phy *phy)
+ 	if (rport->suspended)
+ 		return 0;
+ 
++	rppocket_usb2phy_dbg(rphy, rport, "power-off-before");
++
+ 	ret = property_enable(base, &rport->port_cfg->phy_sus, true);
+ 	if (ret)
+ 		return ret;
+@@ -611,6 +663,9 @@ static int rockchip_usb2phy_power_off(struct phy *phy)
+ 	rport->suspended = true;
+ 	clk_disable_unprepare(rphy->clk480m);
+ 
++	rppocket_usb2phy_dbg(rphy, rport, "power-off-after");
++	dev_info(rphy->dev, "RPPDBG usb2phy power-off port=%u ret=0\n",
++		 rport->port_id);
+ 	return 0;
+ }
+ 
+@@ -1413,6 +1468,14 @@ static int rockchip_usb2phy_probe(struct platform_device *pdev)
+ 				     "failed to get phyclk\n");
+ 	}
+ 
++	dev_info(dev,
++		 "RPPDBG usb2phy probe reg=0x%08x cfg-reg=0x%08x has-usbgrf=%d irq=%d phy_tuning=%d clkout@0x%04x[%u:%u]\n",
++		 reg, rphy->phy_cfg->reg, rphy->usbgrf != NULL, rphy->irq,
++		 rphy->phy_cfg->phy_tuning != NULL,
++		 rphy->phy_cfg->clkout_ctl.offset,
++		 rphy->phy_cfg->clkout_ctl.bitend,
++		 rphy->phy_cfg->clkout_ctl.bitstart);
++
+ 	ret = rockchip_usb2phy_clk480m_register(rphy);
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "failed to register 480m output clock\n");
+diff --git a/drivers/usb/dwc2/core.c b/drivers/usb/dwc2/core.c
+--- a/drivers/usb/dwc2/core.c
++++ b/drivers/usb/dwc2/core.c
+@@ -512,6 +512,13 @@ void dwc2_force_mode(struct dwc2_hsotg *hsotg, bool host)
+ 
+ 	dev_dbg(hsotg->dev, "Forcing mode to %s\n", host ? "host" : "device");
+ 
++	dev_info(hsotg->dev,
++		 "RPPDBG dwc2 force-mode enter host=%d dr_mode=%d hw_otg=%d gotgctl=0x%08x gusbcfg=0x%08x hprt0=0x%08x\n",
++		 host, hsotg->dr_mode, dwc2_hw_is_otg(hsotg),
++		 dwc2_readl(hsotg, GOTGCTL),
++		 dwc2_readl(hsotg, GUSBCFG),
++		 dwc2_readl(hsotg, HPRT0));
++
+ 	/*
+ 	 * Force mode has no effect if the hardware is not OTG.
+ 	 */
+@@ -537,7 +544,18 @@ void dwc2_force_mode(struct dwc2_hsotg *hsotg, bool host)
+ 	gusbcfg |= set;
+ 	dwc2_writel(hsotg, gusbcfg, GUSBCFG);
+ 
++	dev_info(hsotg->dev,
++		 "RPPDBG dwc2 force-mode wrote host=%d gusbcfg=0x%08x gotgctl=0x%08x hprt0=0x%08x\n",
++		 host, dwc2_readl(hsotg, GUSBCFG),
++		 dwc2_readl(hsotg, GOTGCTL),
++		 dwc2_readl(hsotg, HPRT0));
++
+ 	dwc2_wait_for_mode(hsotg, host);
++	dev_info(hsotg->dev,
++		 "RPPDBG dwc2 force-mode done host=%d gotgctl=0x%08x gusbcfg=0x%08x hprt0=0x%08x\n",
++		 host, dwc2_readl(hsotg, GOTGCTL),
++		 dwc2_readl(hsotg, GUSBCFG),
++		 dwc2_readl(hsotg, HPRT0));
+ 	return;
+ }
+ 
+diff --git a/drivers/usb/dwc2/hcd.c b/drivers/usb/dwc2/hcd.c
+--- a/drivers/usb/dwc2/hcd.c
++++ b/drivers/usb/dwc2/hcd.c
+@@ -5325,10 +5325,24 @@ int dwc2_hcd_init(struct dwc2_hsotg *hsotg)
+ 	 * allocates the DMA buffer pool, registers the USB bus, requests the
+ 	 * IRQ line, and calls hcd_start method.
+ 	 */
++	dev_info(hsotg->dev,
++		 "RPPDBG dwc2 before usb_add_hcd gotgctl=0x%08x gusbcfg=0x%08x hprt0=0x%08x dr_mode=%d op_state=%d\n",
++		 dwc2_readl(hsotg, GOTGCTL),
++		 dwc2_readl(hsotg, GUSBCFG),
++		 dwc2_readl(hsotg, HPRT0),
++		 hsotg->dr_mode, hsotg->op_state);
++
+ 	retval = usb_add_hcd(hcd, hsotg->irq, IRQF_SHARED);
+ 	if (retval < 0)
+ 		goto error4;
+ 
++	dev_info(hsotg->dev,
++		 "RPPDBG dwc2 after usb_add_hcd ret=%d gotgctl=0x%08x gusbcfg=0x%08x hprt0=0x%08x\n",
++		 retval,
++		 dwc2_readl(hsotg, GOTGCTL),
++		 dwc2_readl(hsotg, GUSBCFG),
++		 dwc2_readl(hsotg, HPRT0));
++
+ 	device_wakeup_enable(hcd->self.controller);
+ 
+ 	dwc2_hcd_dump_state(hsotg);

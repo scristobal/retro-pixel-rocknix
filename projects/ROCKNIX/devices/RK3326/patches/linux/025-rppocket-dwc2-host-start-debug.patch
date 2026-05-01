@@ -1,0 +1,143 @@
+diff --git a/drivers/usb/dwc2/core_intr.c b/drivers/usb/dwc2/core_intr.c
+index 5b251fc005a8..2fbac0d00a01 100644
+--- a/drivers/usb/dwc2/core_intr.c
++++ b/drivers/usb/dwc2/core_intr.c
+@@ -322,10 +322,17 @@ static void dwc2_handle_session_req_intr(struct dwc2_hsotg *hsotg)
+ 		dwc2_hsotg_disconnect(hsotg);
+ 	} else {
+ 		/* Turn on the port power bit. */
+ 		hprt0 = dwc2_read_hprt0(hsotg);
++		dev_info(hsotg->dev,
++			 "RPPDBG dwc2 session_req before-power gotgctl=0x%08x gusbcfg=0x%08x gintsts=0x%08x hprt0=0x%08x lx=%d op=%d\n",
++			 dwc2_readl(hsotg, GOTGCTL), dwc2_readl(hsotg, GUSBCFG),
++			 dwc2_readl(hsotg, GINTSTS), hprt0, hsotg->lx_state,
++			 hsotg->op_state);
+ 		hprt0 |= HPRT0_PWR;
+ 		dwc2_writel(hsotg, hprt0, HPRT0);
++		dev_info(hsotg->dev, "RPPDBG dwc2 session_req after-power hprt0=0x%08x\n",
++			 dwc2_readl(hsotg, HPRT0));
+ 		/* Connect hcd after port power is set. */
+ 		dwc2_hcd_connect(hsotg);
+ 	}
+ }
+diff --git a/drivers/usb/dwc2/hcd.c b/drivers/usb/dwc2/hcd.c
+index 64a4a03444d2..01c0b8e70e36 100644
+--- a/drivers/usb/dwc2/hcd.c
++++ b/drivers/usb/dwc2/hcd.c
+@@ -1645,17 +1645,24 @@ void dwc2_hcd_start(struct dwc2_hsotg *hsotg)
+ {
+ 	u32 hprt0;
+ 
++	dev_info(hsotg->dev,
++		 "RPPDBG dwc2 hcd_start enter op=%d lx=%d gotgctl=0x%08x gusbcfg=0x%08x hprt0=0x%08x gintsts=0x%08x\n",
++		 hsotg->op_state, hsotg->lx_state, dwc2_readl(hsotg, GOTGCTL),
++		 dwc2_readl(hsotg, GUSBCFG), dwc2_readl(hsotg, HPRT0),
++		 dwc2_readl(hsotg, GINTSTS));
+ 	if (hsotg->op_state == OTG_STATE_B_HOST) {
+ 		/*
+ 		 * Reset the port. During a HNP mode switch the reset
+ 		 * needs to occur within 1ms and have a duration of at
+ 		 * least 50ms.
+ 		 */
+ 		hprt0 = dwc2_read_hprt0(hsotg);
+ 		hprt0 |= HPRT0_RST;
+ 		dwc2_writel(hsotg, hprt0, HPRT0);
++		dev_info(hsotg->dev, "RPPDBG dwc2 hcd_start b-host-reset hprt0=0x%08x\n",
++			 dwc2_readl(hsotg, HPRT0));
+ 	}
+ 
+ 	queue_delayed_work(hsotg->wq_otg, &hsotg->start_work,
+ 			   msecs_to_jiffies(50));
+ }
+@@ -4264,24 +4272,39 @@ static int _dwc2_hcd_start(struct usb_hcd *hcd)
+ 	if (dwc2_is_device_mode(hsotg)) {
+ 		spin_unlock_irqrestore(&hsotg->lock, flags);
+ 		return 0;	/* why 0 ?? */
+ 	}
+ 
++	dev_info(hsotg->dev,
++		 "RPPDBG dwc2 _hcd_start before-reinit gotgctl=0x%08x gusbcfg=0x%08x gintsts=0x%08x hprt0=0x%08x lx=%d op=%d\n",
++		 dwc2_readl(hsotg, GOTGCTL), dwc2_readl(hsotg, GUSBCFG),
++		 dwc2_readl(hsotg, GINTSTS), dwc2_readl(hsotg, HPRT0),
++		 hsotg->lx_state, hsotg->op_state);
+ 	dwc2_hcd_reinit(hsotg);
++	dev_info(hsotg->dev,
++		 "RPPDBG dwc2 _hcd_start after-reinit gotgctl=0x%08x gusbcfg=0x%08x gintsts=0x%08x hprt0=0x%08x\n",
++		 dwc2_readl(hsotg, GOTGCTL), dwc2_readl(hsotg, GUSBCFG),
++		 dwc2_readl(hsotg, GINTSTS), dwc2_readl(hsotg, HPRT0));
+ 
+ 	hprt0 = dwc2_read_hprt0(hsotg);
+ 	/* Has vbus power been turned on in dwc2_core_host_init ? */
+ 	if (hprt0 & HPRT0_PWR) {
+ 		/* Enable external vbus supply before resuming root hub */
+ 		spin_unlock_irqrestore(&hsotg->lock, flags);
++		dev_info(hsotg->dev, "RPPDBG dwc2 _hcd_start vbus-init-before hprt0=0x%08x\n",
++			 hprt0);
+ 		ret = dwc2_vbus_supply_init(hsotg);
+-		if (ret)
++		dev_info(hsotg->dev, "RPPDBG dwc2 _hcd_start vbus-init ret=%d hprt0=0x%08x\n",
++			 ret, dwc2_readl(hsotg, HPRT0));
++		if (ret)
+ 			return ret;
+ 		spin_lock_irqsave(&hsotg->lock, flags);
+ 	}
+ 
+ 	/* Initialize and connect root hub if one is not already attached */
+ 	if (bus->root_hub) {
+ 		dev_dbg(hsotg->dev, "DWC OTG HCD Has Root Hub\n");
++		dev_info(hsotg->dev, "RPPDBG dwc2 _hcd_start resume-root-hub hprt0=0x%08x\n",
++			 dwc2_readl(hsotg, HPRT0));
+ 		/* Inform the HUB driver to resume */
+ 		usb_hcd_resume_root_hub(hcd);
+ 	}
+diff --git a/drivers/usb/dwc2/hcd_intr.c b/drivers/usb/dwc2/hcd_intr.c
+index 046af688c6fa..7e89504dd7a5 100644
+--- a/drivers/usb/dwc2/hcd_intr.c
++++ b/drivers/usb/dwc2/hcd_intr.c
+@@ -235,6 +235,9 @@ static void dwc2_hprt0_enable(struct dwc2_hsotg *hsotg, u32 hprt0,
+ 	u32 hfir;
+ 
+ 	dev_vdbg(hsotg->dev, "%s(%p)\n", __func__, hsotg);
++	dev_info(hsotg->dev,
++		 "RPPDBG dwc2 hprt0_enable enter hprt0=0x%08x gusbcfg=0x%08x hcfg=0x%08x\n",
++		 hprt0, dwc2_readl(hsotg, GUSBCFG), dwc2_readl(hsotg, HCFG));
+ 
+ 	/* Every time when port enables calculate HFIR.FrInterval */
+ 	hfir = dwc2_readl(hsotg, HFIR);
+@@ -308,11 +311,15 @@ static void dwc2_hprt0_enable(struct dwc2_hsotg *hsotg, u32 hprt0,
+ 
+ 	if (do_reset) {
+ 		*hprt0_modify |= HPRT0_RST;
+ 		dwc2_writel(hsotg, *hprt0_modify, HPRT0);
++		dev_info(hsotg->dev, "RPPDBG dwc2 hprt0_enable reset-write modify=0x%08x hprt0=0x%08x\n",
++			 *hprt0_modify, dwc2_readl(hsotg, HPRT0));
+ 		queue_delayed_work(hsotg->wq_otg, &hsotg->reset_work,
+ 				   msecs_to_jiffies(60));
+ 	} else {
+ 		/* Port has been enabled, set the reset change flag */
++		dev_info(hsotg->dev, "RPPDBG dwc2 hprt0_enable no-reset hprt0=0x%08x\n",
++			 dwc2_readl(hsotg, HPRT0));
+ 		hsotg->flags.b.port_reset_change = 1;
+ 	}
+ }
+@@ -332,6 +339,11 @@ static void dwc2_port_intr(struct dwc2_hsotg *hsotg)
+ 
+ 	hprt0 = dwc2_readl(hsotg, HPRT0);
+ 	hprt0_modify = hprt0;
++	dev_info(hsotg->dev,
++		 "RPPDBG dwc2 port_intr hprt0=0x%08x conn=%d conndet=%d ena=%d enachg=%d overchg=%d gintsts=0x%08x\n",
++		 hprt0, !!(hprt0 & HPRT0_CONNSTS), !!(hprt0 & HPRT0_CONNDET),
++		 !!(hprt0 & HPRT0_ENA), !!(hprt0 & HPRT0_ENACHG),
++		 !!(hprt0 & HPRT0_OVRCURRCHG), dwc2_readl(hsotg, GINTSTS));
+ 
+ 	/*
+ 	 * Clear appropriate bits in HPRT0 to clear the interrupt bit in
+@@ -345,6 +357,8 @@ static void dwc2_port_intr(struct dwc2_hsotg *hsotg)
+ 	 */
+ 	if (hprt0 & HPRT0_CONNDET) {
+ 		dwc2_writel(hsotg, hprt0_modify | HPRT0_CONNDET, HPRT0);
++		dev_info(hsotg->dev, "RPPDBG dwc2 port_intr conn-clear hprt0=0x%08x\n",
++			 dwc2_readl(hsotg, HPRT0));
+ 
+ 		dev_vdbg(hsotg->dev,
+ 			 "--Port Interrupt HPRT0=0x%08x Port Connect Detected--\n",

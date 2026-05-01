@@ -1,0 +1,273 @@
+2026-04-27 - Stock image instrumentation
+========================================
+
+Goal
+----
+Use the working vendor image as an oracle for the RTL8188EUS bring-up
+sequence.  The ROCKNIX static-DTS experiments have not made the USB Wi-Fi
+device enumerate, so the next useful evidence is the stock runtime state:
+USB topology, GPIO levels, regulators, module loading, and timing.
+
+Background
+----------
+Known hardware:
+
+    Realtek RTL8188EUS - USB Wi-Fi
+
+Known stock references:
+
+    original-sources/images/RETRO PIXEL-POCKET V1.1.3.img.gz
+    original-sources/images/extracted/v1.1.3.img
+
+Relevant stock behavior from source:
+
+    /storage/.config/custom_start.sh is called by stock autostart.sh with:
+
+        /storage/.config/custom_start.sh before
+        /storage/.config/custom_start.sh after
+
+Decision
+--------
+Instrument a copy of the stock image using the storage-side
+custom_start.sh hook.  Do not modify the original source image.  Keep the
+first stock experiment passive so it does not disturb Wi-Fi initialization.
+
+Planned image change
+--------------------
+Create a copied stock image, then add:
+
+    /storage/.config/custom_start.sh
+
+The script should write timestamped snapshots to /storage and collect:
+
+    - date, uname, /proc/cmdline
+    - lsmod
+    - modinfo 8188eu
+    - USB device sysfs attributes
+    - /sys/kernel/debug/gpio
+    - /sys/kernel/debug/regulator/regulator_summary
+    - iw dev
+    - ip addr
+    - filtered dmesg for usb, 8188, rtl, wifi, wlan, firmware, phy, gpio,
+      regulator, and vcc
+
+Snapshots should run early and later, for example:
+
+    early
+    after_2s
+    after_10s
+    after_40s
+
+Expected test
+-------------
+Flash the instrumented stock image, boot it, confirm stock Wi-Fi still
+works, then reinsert the SD card so the generated stock debug log can be
+inspected directly.
+
+Success criteria
+----------------
+The stock debug log should show the working path to a Realtek USB device,
+including whether it appears as:
+
+    0bda:8179
+    0bda:0179
+
+and what GPIO/regulator/module state existed before and after
+enumeration.
+
+Next decision
+-------------
+If stock enumerates with the same static GPIO levels as ROCKNIX, focus on
+kernel/USB PHY/vendor-driver behavior.  If stock toggles a GPIO or delays
+power before enumeration, reproduce that sequence in ROCKNIX.  If
+enumeration only happens after the vendor 8188eu driver loads, port or
+package that driver and test driver-side initialization.
+
+
+Experiment: passive stock runtime capture
+-----------------------------------------
+Image change:
+    Created a copy of the stock v1.1.3 raw image:
+
+        debug/v1.1.3-stock-debug.img
+
+    Source image:
+
+        original-sources/images/extracted/v1.1.3.img
+        sha256 5239be9be3de5fe0cb41451de4ae478acb574f2e9e96420b3e956127e5504acd
+
+    Instrumented image:
+
+        debug/v1.1.3-stock-debug.img
+        sha256 abac9e9cd2032e49245bcf2fe3dcdd0d9dff9c99ae4f60af4606a1743b940653
+
+Implementation:
+    Extracted partition 2 from the copied image:
+
+        start sector: 4227072
+        sector count: 65536
+        filesystem: ext4, label STORAGE
+
+    Added:
+
+        /.config/custom_start.sh
+
+    inside that ext4 storage partition, then wrote the partition back into
+    the copied image.  Verification with debugfs shows:
+
+        /.config/custom_start.sh
+        mode 0755
+
+    The stock image partition table remains unchanged:
+
+        partition 1: FAT32, 2G
+        partition 2: Linux/ext4, 32M
+
+Script payload:
+    The injected script is also saved in the repository as:
+
+        debug/stock-custom_start.sh
+
+    It passively captures snapshots during the stock "before" and "after"
+    autostart phases.  It does not unload drivers, toggle GPIOs, or
+    otherwise modify the Wi-Fi path.
+
+Expected test:
+    Flash debug/v1.1.3-stock-debug.img directly to the SD card, boot the
+    device, confirm stock Wi-Fi still works, then reinsert the SD card.
+    The stock storage partition should contain one or more files named:
+
+        /storage/rppocket-stock-debug-*.txt
+
+    Those logs should reveal the working vendor runtime sequence for
+    RTL8188EUS enumeration.
+
+Observed result:
+    The device did not boot.  On reinsertion, the SD still showed the
+    stock-sized 32M STORAGE partition, so first-boot storage expansion did
+    not complete.
+
+Decision:
+    Do not use a stock debug image that pre-creates /storage/.config while
+    leaving the storage partition at 32M.  This likely trips the same
+    first-boot initialization hazard documented in debug/pre.sh for
+    ROCKNIX: user-created files under /storage can make resize logic think
+    the partition is already initialized.
+
+Next experiment:
+    Build a second instrumented stock image with the storage partition
+    expanded in the image before flashing.  Keep the same passive
+    custom_start.sh payload, but give /storage enough space so stock
+    first-boot setup cannot fail due to the 32M placeholder partition.
+
+
+Experiment: passive stock capture with pre-expanded storage
+----------------------------------------------------------
+Image change:
+    Created a second copied stock image:
+
+        debug/v1.1.3-stock-debug-4g.img
+
+    This image is 4G and preserves the stock 2G FAT32 first partition.
+    Partition 2 is expanded from 32M to 2G before flashing:
+
+        partition 1: FAT32, 2G
+        partition 2: Linux/ext4, 2G
+
+    The ext4 filesystem in partition 2 was resized to match the enlarged
+    partition.  Verification:
+
+        label: STORAGE
+        block size: 1024
+        block count: 2060288
+
+    The same passive hook was installed:
+
+        /.config/custom_start.sh
+        mode 0755
+
+    Instrumented 4G image:
+
+        debug/v1.1.3-stock-debug-4g.img
+        sha256 6ab6d6c03e7180cc0d8f7369adf9b8b58c8e1072f80639f33965d0057f65b115
+
+Expected test:
+    Flash debug/v1.1.3-stock-debug-4g.img directly to the SD card, boot
+    the device, confirm whether stock now boots and Wi-Fi works, then
+    reinsert the SD card.  If successful, inspect:
+
+        /storage/rppocket-stock-debug-*.txt
+
+    If this still does not boot, abandon the /storage preseed approach
+    and instead inject the passive logger into the read-only system side
+    or boot partition without creating /storage/.config before stock
+    first boot.
+
+Observed result:
+    The pre-expanded stock debug image booted.  Wi-Fi worked, and the
+    settings scan showed nearby networks.
+
+    Generated logs:
+
+        /storage/rppocket-stock-debug-1706104711.txt
+        /storage/rppocket-stock-debug-1706104736.txt
+
+Key stock facts:
+    USB Wi-Fi enumerates as:
+
+        usb 1-1: idVendor=0bda, idProduct=8179
+        product=802.11n NIC
+        manufacturer=Realtek
+
+    It binds to the vendor driver:
+
+        /lib/modules/4.4.189/kernel/drivers/net/wireless/rockchip_wlan/rtl8188eu/8188eu.ko
+        driver path: /sys/bus/usb/drivers/rtl8188eu
+
+    Stock has both modules loaded:
+
+        8188eu
+        r8188eu
+
+    Stock GPIO state after Wi-Fi is working:
+
+        gpio-115 vcc5v_en_gpio out hi
+        gpio-73 is not a wifi regulator GPIO
+        pin 73 (gpio2-9) is owned by ff450000.dsi.0 / lcd_rst group
+
+    In other words, the stock runtime does not support the ROCKNIX
+    hypothesis that PB1/gpio73 should be claimed and driven as an
+    always-on Wi-Fi power regulator.
+
+    Stock dmesg timing:
+
+        [  2.353790] panel driver parses vcc5v_en_gpio gpio = 115
+        [  2.692930] panel_simple_regulator_enable ...
+        [ 24.892475] rockchip-usb2phy ... Requested PHY is disabled
+        [ 24.909020] usb usb1: DWC OTG root hub appears
+        [ 25.470974] usb 1-1: Realtek 0bda:8179 appears
+        [ 25.548153] Realtek 8188EU USB WiFi driver init
+        [ 28.103573] wlan0 is created
+
+Decision:
+    The strongest new lead is timing/sequence, not a missing static
+    regulator.  ROCKNIX probes DWC2 early, while stock brings up the DWC2
+    root hub much later, after the panel power path has run.  The next
+    ROCKNIX experiment should remove the PB1/gpio73 Wi-Fi regulator and
+    force a delayed DWC2 bus reset/rebind after the panel and PC3 are
+    stable.
+
+Next experiment:
+    On ROCKNIX:
+
+        - remove the wifi_vcc_en fixed regulator from gpio2 PB1
+        - leave PC3/vcc_host active-high
+        - keep DWC2 topology
+        - add a temporary debug hook that waits about 25-30 seconds, then
+          unbinds and rebinds ff300000.usb from the dwc2 platform driver
+          and captures USB sysfs afterward
+
+    If Realtek appears after the delayed rebind, the proper fix should be
+    kernel-side sequencing/probe deferral rather than a permanent user
+    hook.  If it still does not appear, the next likely target is the
+    vendor 4.4 USB PHY behavior or vendor 8188eu driver initialization.

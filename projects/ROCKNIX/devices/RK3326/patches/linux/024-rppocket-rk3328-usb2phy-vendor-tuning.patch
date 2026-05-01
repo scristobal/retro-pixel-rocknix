@@ -1,0 +1,78 @@
+From: RetroPixel Pocket bring-up
+Subject: [PATCH] phy: rockchip-inno-usb2: align rk3328 tuning with vendor
+
+The RetroPixel Pocket stock kernel uses the RK3328 USB2PHY configuration for
+its RK3326/PX30 USB controller, but its vendor 4.4 driver programs additional
+PHY tuning and uses narrower GRF bitfields than mainline 6.12.
+
+The internal RTL8188EUS Wi-Fi module on the RetroPixel Pocket is connected to
+the DWC2 OTG controller. With the mainline configuration, DWC2 reaches host
+mode and powers the PHY, but HPRT0 never reports a device connection. Mirror
+the vendor RK3328 tuning path and matching register fields as a board bring-up
+candidate.
+
+---
+ drivers/phy/rockchip/phy-rockchip-inno-usb2.c | 29 +++++++++++++++++--
+ 1 file changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+--- a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
++++ b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+@@ -1555,6 +1555,29 @@ static int rk3128_usb2phy_tuning(struct rockchip_usb2phy *rphy)
+ 				BIT(2) << BIT_WRITEABLE_SHIFT | 0);
+ }
+ 
++static int rk3328_usb2phy_tuning(struct rockchip_usb2phy *rphy)
++{
++	int ret;
++
++	/* Open debug mode for tuning. */
++	ret = regmap_write(rphy->grf, 0x2c, 0xffff0400);
++	if (ret)
++		return ret;
++
++	/* Open pre-emphasize in non-chirp state for otg port. */
++	ret = regmap_write(rphy->grf, 0x0, 0x00070004);
++	if (ret)
++		return ret;
++
++	/* Open pre-emphasize in non-chirp state for host port. */
++	ret = regmap_write(rphy->grf, 0x30, 0x00070004);
++	if (ret)
++		return ret;
++
++	/* Turn off differential receiver in suspend mode. */
++	return regmap_write(rphy->grf, 0x18, 0x00040000);
++}
++
+ static int rk3588_usb2phy_tuning(struct rockchip_usb2phy *rphy)
+ {
+ 	int ret;
+@@ -1772,13 +1795,14 @@ static const struct rockchip_usb2phy_cfg rk3328_phy_cfgs[] = {
+ 	{
+ 		.reg = 0x100,
+ 		.num_ports	= 2,
++		.phy_tuning	= rk3328_usb2phy_tuning,
+ 		.clkout_ctl	= { 0x108, 4, 4, 1, 0 },
+ 		.port_cfgs	= {
+ 			[USB2PHY_PORT_OTG] = {
+-				.phy_sus	= { 0x0100, 15, 0, 0, 0x1d1 },
+-				.bvalid_det_en	= { 0x0110, 3, 2, 0, 3 },
+-				.bvalid_det_st	= { 0x0114, 3, 2, 0, 3 },
+-				.bvalid_det_clr = { 0x0118, 3, 2, 0, 3 },
++				.phy_sus	= { 0x0100, 8, 0, 0, 0x1d1 },
++				.bvalid_det_en	= { 0x0110, 2, 2, 0, 1 },
++				.bvalid_det_st	= { 0x0114, 2, 2, 0, 1 },
++				.bvalid_det_clr = { 0x0118, 2, 2, 0, 1 },
+ 				.idfall_det_en	= { 0x0110, 5, 5, 0, 1 },
+ 				.idfall_det_st	= { 0x0114, 5, 5, 0, 1 },
+ 				.idfall_det_clr = { 0x0118, 5, 5, 0, 1 },
+@@ -1794,7 +1818,7 @@ static const struct rockchip_usb2phy_cfg rk3328_phy_cfgs[] = {
+ 				.utmi_ls	= { 0x0120, 5, 4, 0, 1 },
+ 			},
+ 			[USB2PHY_PORT_HOST] = {
+-				.phy_sus	= { 0x104, 15, 0, 0, 0x1d1 },
++				.phy_sus	= { 0x104, 8, 0, 0, 0x1d1 },
+ 				.ls_det_en	= { 0x110, 1, 1, 0, 1 },
+ 				.ls_det_st	= { 0x114, 1, 1, 0, 1 },
+ 				.ls_det_clr	= { 0x118, 1, 1, 0, 1 },

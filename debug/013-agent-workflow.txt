@@ -52,6 +52,30 @@ Do not leave important reasoning only in chat.  The next agent should
 be able to recover the state from current_state.txt, the relevant
 topic notes, and git history.
 
+Stock image instrumentation
+---------------------------
+When ROCKNIX behavior is stuck behind hardware uncertainty, use the
+working stock image as an oracle before continuing a broad guess
+matrix.  Do this on a copy only, never on the pristine stock reference
+under original-sources/.
+
+The proven stock workflow is documented in:
+
+    debug/017-stock-image-instrumentation.txt
+
+Key details:
+
+    - pre-expand the stock STORAGE partition before adding files
+      under /storage, otherwise first-boot resize/init may fail
+    - inject /storage/.config/custom_start.sh as a passive logger
+    - boot stock and confirm the feature still works
+    - after the user reinserts the SD, inspect:
+          /run/media/$USER/STORAGE/rppocket-stock-debug-*.txt
+
+Use stock captures to identify runtime GPIO, regulator, module, USB,
+and timing behavior.  Start a new numbered decision log for any new
+stock-derived ROCKNIX experiment.
+
 Build and device-test rule
 --------------------------
 After a code change, decide whether the device must be reflashed:

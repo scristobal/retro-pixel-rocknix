@@ -6,6 +6,8 @@ This is a ROCKNIX distribution tree with RetroPixel Pocket work layered into the
 
 The `debug/` directory documents hardware bring-up. Use numbered decision logs such as `debug/015-clean-dts-decision-log.txt` for active experiments. Keep `debug/current_state.txt` for accepted project state, not every trial. Factory/vendor references and images are in `original-sources/`.
 
+For unresolved hardware bring-up, stock images may be instrumented as an oracle. Use a copied image, never the original. The proven path is `debug/v1.1.3-stock-debug-4g.img`: pre-expand stock `STORAGE` to avoid first-boot resize failure, inject `/storage/.config/custom_start.sh`, boot stock, confirm the feature still works, then inspect `/storage/rppocket-stock-debug-*.txt`.
+
 ## Build, Test, and Development Commands
 
 Use:
@@ -17,6 +19,8 @@ make docker-RK3326
 to build RK3326 images in Docker. Generated images should appear as `target/ROCKNIX-RK3326.aarch64-*.img.gz`.
 
 For hardware flashing, only prompt the user to run `debug/pre.sh --flash /dev/<sdX>` when an image or boot-critical artifact changed. The user performs device testing manually, then reinserts the SD card for inspection. Prefer mounting and reading the card directly over adding summary scripts.
+
+When a Wangerd/Badgerd SDWire3 is connected, prefer `debug/sdwire-load.sh` over manual SD insertion. Use `sudo ./debug/sdwire-load.sh rocknix --dev /dev/<sdX>` for the latest ROCKNIX image, `sudo ./debug/sdwire-load.sh stock --dev /dev/<sdX>` for `debug/v1.1.3-stock-debug-4g.img`, and `debug/sdwire-load.sh host|target|off` to move the card between host and RPPocket. The `sdwire` CLI must be installed separately; set `SDWIRE=/path/to/sdwire` if it is not in `PATH`.
 
 ## Coding Style & Naming Conventions
 
@@ -35,3 +39,5 @@ Pull requests should explain the hardware problem, summarize tested images, link
 ## Agent-Specific Instructions
 
 Do not resurrect `debug/post.sh`; it was intentionally removed. Use `original-sources/` as the primary reference before assuming another RK3326 handheld is compatible. Preserve unrelated dirty work and never reset or revert user changes without explicit instruction.
+
+When ROCKNIX behavior contradicts assumptions, prefer a working-stock comparison before expanding a guess matrix. Record stock-image experiments in a new numbered decision log and keep the captured stock logs as evidence for the next ROCKNIX experiment.

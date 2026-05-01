@@ -1,7 +1,7 @@
 CURRENT STATE
 ==============================================================
-As of: 2026-04-26
-Build: target/ROCKNIX-RK3326.aarch64-20260426-a.img.gz
+As of: 2026-05-01
+Build: target/ROCKNIX-RK3326.aarch64-20260501-a.img.gz
 Branch: retropixel-pocket-support
 HEAD : debug: document agent workflow and current branch state
 
@@ -96,6 +96,14 @@ Stuff that works
        RPPocket gpio-keys SDL GUID is in gamecontrollerdb:
            1900bb07010000009178000000050000
        using the same button order as the confirmed RetroArch profile.
+[OK]   Wi-Fi works.  The missing hardware enable is GPIO0_PA1, found in
+       the stock busybox init as gpio1.  ROCKNIX now hogs GPIO0_PA1
+       HIGH as "wifi-vcc-en" in rk3326-funnyplaying-rppocket.dts,
+       enabling the YJ33/RTL8188EUS 3.3V rail.  The compiled DTB also
+       holds GPIO3_PC2 LOW as "stock-gpio114" to match stock init.
+       User confirmed the production DTS image boots without the
+       --stock-init-gpio1 debug hook, connects to a local Wi-Fi
+       network, and runs Pico-8 Splore successfully.
 [OK]   ROCKNIX device-quirks system applies the FunnyPlaying-specific
        audio routing (Playback Mux SPK -> HP swap) and the 100%
        Master gain at boot.
@@ -134,39 +142,6 @@ Stuff that's broken or unfinished
        BTN_TRIGGER_HAPPY1 but has no visible action.  This is expected
        for now because ROCKNIX does not bind it to a user action.
 
-[TEST] Wi-Fi.  ROCKNIX settings shows Wi-Fi, but no test has produced
-       a wlan interface, rfkill device, iw PHY, USB Wi-Fi child, or
-       mmc1:0001 SDIO function yet.
-
-       Stable findings:
-           - The clean RPPocket DTS based directly on rk3326.dtsi
-             boots without user-observed regressions.  Mounted SD logs
-             confirm the running model is FunnyPlaying RetroPixel
-             Pocket and the selected DTB is rk3326-funnyplaying-
-             rppocket.dtb, not an RG351/Odroid DTB.
-           - USB root hubs enumerate, but Wi-Fi has not appeared on
-             USB.
-           - ff380000.mmc can probe as mmc1, but the card/device has
-             not responded.
-           - Factory v1.1.3 points strongly at Realtek SDIO:
-                 rtl8189fs/wlan.ko   alias sdio:c*v024CdF179*
-                 rtl8189es/8189es.ko alias sdio:c*v024Cd8179*
-           - ROCKNIX 6.12.79 does not currently include RTL8189FS/ES
-             SDIO support, so a driver port/package may still be
-             needed after bus enumeration works.
-
-       Previous Wi-Fi trial history lives in:
-
-           debug/014-wifi-decision-log.txt
-
-       Clean DTS validation is closed in:
-
-           debug/015-clean-dts-decision-log.txt
-
-       Active Wi-Fi work has restarted from scratch in:
-
-           debug/016-wifi-from-scratch.txt
-
 [TODO] Power slider.  The hardware-side slider is wired through
        rk805_pwrkey (verified via /proc/bus/input/devices); a long
        slide presumably triggers PMIC poweroff.  Behaviour beyond
@@ -200,9 +175,9 @@ Open questions
 How to resume work
 ------------------
 1.  Continue Wi-Fi from debug/016-wifi-from-scratch.txt.  Start from
-    the verified clean RPPocket DTB baseline and prove the Wi-Fi chip,
-    firmware, power/reset, and SDIO requirements from factory sources
-    and mounted SD logs before making another hardware-facing change.
+    the verified clean RPPocket DTB baseline only if regression testing
+    finds a new issue.  The successful close-out is documented in
+    debug/020-wifi-stock-source-instrumentation.txt.
 2.  If brightness is revisited, decide whether to add a ROCKNIX
     userspace binding for PA0/PA1/PB2 or keep the vendor-style
     Fn + volume model and investigate why gpio2 PA4 has not fired.

@@ -96,3 +96,1000 @@ Decision / next step:
           node
         - whether firmware/NVRAM/calibration files differ from ROCKNIX
         - whether ROCKNIX has the needed driver enabled and loading
+
+
+2026-04-26 - Board inspection identifies USB RTL8188EUS
+------------------------------------------------------
+Hypothesis:
+    The Wi-Fi chip is USB, not SDIO.  Previous SDIO-focused experiments
+    could not make progress because the board does not use the suspected
+    RTL8189FS/RTL8189ES SDIO path.
+
+Evidence used before changing code:
+    User opened the device and reported the Wi-Fi marking:
+
+        Realtek RTL8188EUS - E210631 GE40
+
+    Factory/source evidence agrees with this:
+
+        - original vendor module exists:
+          rockchip_wlan/rtl8188eu/8188eu.ko
+        - modinfo aliases include:
+          usb:v0BDAp8179
+          usb:v0BDAp0179
+        - original source usb_intf.c marks 0x0BDA:0x8179 as 8188EUS
+        - original RetroPixel options included RTL8188EU
+
+    ROCKNIX RK3326 already builds the in-kernel rtl8xxxu driver:
+
+        CONFIG_RTL8XXXU=m
+
+    but older/less-tested Realtek USB IDs are disabled:
+
+        # CONFIG_RTL8XXXU_UNTESTED is not set
+
+Code/image change:
+    Enabled:
+
+        CONFIG_RTL8XXXU_UNTESTED=y
+
+    This keeps the first USB Wi-Fi test small and uses the existing
+    in-kernel driver before porting the vendor 8188eu driver.
+
+Build verification:
+    Built ROCKNIX-RK3326.aarch64-20260426 successfully.
+
+    Verified in the build output:
+
+        CONFIG_RTL8XXXU=m
+        CONFIG_RTL8XXXU_UNTESTED=y
+
+    Verified image contents:
+
+        /usr/lib/kernel-overlays/base/lib/modules/6.12.79/kernel/drivers/net/wireless/realtek/rtl8xxxu/rtl8xxxu.ko
+        /usr/lib/kernel-overlays/base/lib/firmware/rtlwifi/rtl8188eufw.bin
+
+Exact test requested:
+    Build and flash a new image.  Boot with the device closed or open,
+    then test Wi-Fi scanning from the settings UI.
+
+Observed result from mounted SD logs:
+    Pending.
+
+Decision / next step:
+    If this still does not scan, inspect mounted logs for:
+
+        - whether USB enumerates 0bda:8179 or 0bda:0179
+        - whether rtl8xxxu binds
+        - whether rtl8188eufw.bin is present and loaded
+        - whether scan failure is driver/firmware rather than bus power
+
+    If USB enumerates but rtl8xxxu is not sufficient, port or package
+    the vendor RTL8188EU driver path used by the original RetroPixel
+    build.
+
+
+2026-04-26 - USB device still does not enumerate; add factory Wi-Fi power GPIO
+------------------------------------------------------------------------------
+Observed result from mounted SD logs:
+    The in-kernel driver experiment did not reach the driver binding stage.
+
+    Evidence:
+
+        - no USB child device appears under the root hubs
+        - no 0bda:8179 or 0bda:0179 device appears
+        - rtl8xxxu is not loaded
+        - only USB root hubs are listed:
+          usb1 DWC OTG Controller
+          usb2 EHCI Host Controller
+          usb3 OHCI Host Controller
+
+    This means the failure is before Realtek driver selection.  The likely
+    causes are power, reset, USB host routing, or GPIO polarity.
+
+Factory-source evidence:
+    The original RPPocket DTS has panel-side GPIO controls that were not
+    fully represented in the clean DTS:
+
+        vcc5v_en_gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_LOW>;
+        wifi_vcc_en_gpio = <&gpio2 RK_PB1 GPIO_ACTIVE_LOW>;
+
+    Current ROCKNIX DTS used GPIO3 PC3 as active-high vcc_host.  That is
+    opposite of the factory polarity.  It also had no modeled GPIO2 PB1
+    Wi-Fi power enable at all.
+
+Code/image change:
+    Updated the RPPocket DTS to:
+
+        - make vcc_host GPIO3 PC3 active-low
+        - add an always-on fixed regulator for GPIO2 PB1 active-low,
+          supplied by vcc_wifi
+
+Exact test requested:
+    Build and flash a new image, boot, test Wi-Fi scan, then reinsert
+    the SD card for direct log inspection.
+
+Expected log change:
+    At minimum, the mounted logs should show whether the RTL8188EUS
+    now enumerates as 0bda:8179 or 0bda:0179.  If it enumerates, driver
+    work becomes relevant.  If it still does not enumerate, the next
+    step is to compare more of the original USB/power/panel enable
+    sequence and possibly add a debug hook to sample GPIO direction/value.
+
+Observed result from mounted SD logs:
+    The new GPIO-backed regulators are active:
+
+        wifi_vcc_en: 3300 mV, enabled
+        gpio2 PB1: out lo ACTIVE LOW
+        vcc_host: 5000 mV, enabled
+        gpio3 PC3: out lo ACTIVE LOW
+
+    The RTL8188EUS still does not enumerate.  Only USB root hubs are
+    present, and there is still no 0bda:8179 or 0bda:0179 device.
+
+Additional factory-image check:
+    Decompiling the shipped original image DTB from:
+
+        /run/media/samu/RETROPIXEL1/rk3326-rppocket_v6_0-linux.dtb
+
+    shows the factory booted the RPPocket with only the DWC2 OTG USB
+    controller path enabled.  The EHCI/OHCI host controllers are present
+    in the SoC DTS but remain disabled in the shipped RPPocket DTB.
+
+    Shipped DTB excerpt:
+
+        usb@ff300000:
+            dr_mode = "otg";
+            status = "okay";
+
+        usb@ff340000:
+            status = "disabled";
+
+        usb@ff350000:
+            status = "disabled";
+
+Decision / next step:
+    Stop adding Wi-Fi-driver changes.  The device is not visible on USB
+    yet.  Next experiment should make the ROCKNIX RPPocket DTS match the
+    factory USB topology more closely by disabling EHCI/OHCI and relying
+    on the DWC2 path.
+
+Experiment: factory USB topology, phase 1
+    Code change:
+        Disabled the RK3326 EHCI and OHCI host controllers in the
+        RPPocket DTS:
+
+            &usb_host0_ehci { status = "disabled"; };
+            &usb_host0_ohci { status = "disabled"; };
+
+        Left DWC2 as:
+
+            &usb20_otg {
+                dr_mode = "host";
+                vbus-supply = <&vcc_host>;
+                status = "okay";
+            };
+
+    Rationale:
+        The shipped RPPocket DTB enables the DWC2 controller at
+        ff300000 and disables EHCI/OHCI at ff340000/ff350000.  Keeping
+        dr_mode = "host" for this first test avoids changing the
+        role-selection behavior at the same time as the host-controller
+        topology.
+
+    Expected result:
+        Boot logs should show only the DWC2 USB root hub.  If the
+        RTL8188EUS appears as 0bda:8179 or 0bda:0179, Wi-Fi driver
+        binding and firmware become the next problem.  If it still does
+        not enumerate, the next phase should compare DWC2 role/PHY-port
+        settings against the shipped DTB.
+
+    Build verification:
+        Built ROCKNIX-RK3326.aarch64-20260426 successfully.
+
+        Generated images:
+
+            target/ROCKNIX-RK3326.aarch64-20260426-a.img.gz
+            sha256 f6eebaf99b94bdc2054e94bc27afee8f68fc8b288d503e644197b20debd7eb6d
+
+            target/ROCKNIX-RK3326.aarch64-20260426-b.img.gz
+            sha256 7d105c84e7b27355cad4881d6372c10054f6ce1e538a1de73748b9d16d3ab747
+
+        Verified generated DTB:
+
+            usb@ff300000:
+                dr_mode = "host";
+                status = "okay";
+
+            usb@ff340000:
+                status = "disabled";
+
+            usb@ff350000:
+                status = "disabled";
+
+    Exact test requested:
+        Flash this image, boot, test Wi-Fi scan, then reinsert the SD
+        card so the boot logs can be inspected directly.
+
+    Observed result:
+        The topology changed as intended and PC3 stayed active-high:
+
+            gpio-115 regulator-vcc-host out hi
+
+        The only USB root hubs are EHCI/OHCI:
+
+            usb1 idVendor=1d6b idProduct=0002
+            manufacturer="Linux 6.12.79 ehci_hcd"
+            product="EHCI Host Controller"
+            serial="ff340000.usb"
+
+            usb2 idVendor=1d6b idProduct=0001
+            manufacturer="Linux 6.12.79 ohci_hcd"
+            product="Generic Platform OHCI controller"
+            serial="ff350000.usb"
+
+        No Realtek child device appeared:
+
+            no 0bda:8179
+            no 0bda:0179
+            no wlan interface
+            iw dev is empty
+
+        Power state remained asserted:
+
+            gpio-73  regulator-wifi-vcc-e  out lo ACTIVE LOW
+            gpio-115 regulator-vcc-host     out hi
+
+        Regulator summary shows vcc_wifi, wifi_vcc_en, and vcc_host
+        enabled.  vcc_host is consumed by both u2phy port supplies.
+
+    Conclusion:
+        PC3 active-high plus EHCI/OHCI-only also fails to enumerate the
+        RTL8188EUS.  We have now tested the two main USB controller paths
+        with PC3 low and PC3 high.  The remaining low-level suspects are
+        PB1 polarity, explicit DWC2 vbus ownership, delayed sequencing,
+        or an unmodeled reset/enable line not obvious from the stock DTS.
+
+Experiment: invert PB1 Wi-Fi enable on clean DWC2 topology
+    Code change:
+        Keep the 5V host regulator asserted high:
+
+            vcc_host:
+                gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+
+        Invert the named Wi-Fi enable GPIO to assert PB1 high:
+
+            wifi_vcc_en:
+                gpio = <&gpio2 RK_PB1 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+
+        Return USB to the clean DWC2-only topology:
+
+            &usb20_otg:
+                status = "okay";
+
+            &usb_host0_ehci:
+                status = "disabled";
+
+            &usb_host0_ohci:
+                status = "disabled";
+
+    Rationale:
+        The RTL8188EUS still does not enumerate with either DWC2 or
+        EHCI/OHCI while PB1 is driven low.  The stock DTS names PB1 as
+        wifi_vcc_en_gpio, but the related vendor panel-driver block is
+        commented out, so the raw runtime level is not proven by that
+        source.  This test isolates the remaining named Wi-Fi enable
+        polarity without changing the driver or adding another USB path.
+
+    Expected result:
+        The mounted logs should show PB1 as high and only the DWC2 root
+        hub.  If 0bda:8179 or 0bda:0179 appears, keep PB1 active-high and
+        return to driver/firmware binding.  If it still does not appear,
+        PB1 polarity is not sufficient and the next experiment should
+        focus on VBUS ownership/sequencing or a missing reset GPIO.
+
+    Build verification:
+        Built ROCKNIX-RK3326.aarch64-20260427 successfully.
+
+        Generated images:
+
+            target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz
+            sha256 bfe8dce7bfba975aa0e0aad6fc8bf99080150da727fd33718e15a642377a1607
+
+            target/ROCKNIX-RK3326.aarch64-20260427-b.img.gz
+            sha256 0f46fff5589f5ff79defa4a0fcc7a919f7d6589bd641de447bf3fae1c47b70a2
+
+        Verified generated DTB:
+
+            vcc_host:
+                gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+
+            wifi_vcc_en:
+                gpio = <&gpio2 RK_PB1 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+
+            usb@ff300000:
+                dr_mode = "otg";
+                role-switch-default-mode = "host";
+                status = "okay";
+
+            usb@ff340000:
+                status = "disabled";
+
+            usb@ff350000:
+                status = "disabled";
+
+    Exact test requested:
+        Flash this image, boot, test Wi-Fi scan, then reinsert the SD
+        card so the boot logs can be inspected directly.
+
+    Observed result:
+        The image booted with the requested GPIO state:
+
+            gpio-73  regulator-wifi-vcc-e  out hi
+            gpio-115 regulator-vcc-host     out hi
+
+        USB topology was DWC2-only:
+
+            usb1 idVendor=1d6b idProduct=0002
+            manufacturer="Linux 6.12.79 dwc2_hsotg"
+            product="DWC OTG Controller"
+            serial="ff300000.usb"
+
+        No Realtek child device appeared:
+
+            no 0bda:8179
+            no 0bda:0179
+            no wlan interface
+            iw dev is empty
+
+    Conclusion:
+        PB1 high does not make the RTL8188EUS enumerate.  PB1 polarity is
+        not sufficient to explain the failure.  Since PB1-low and
+        PB1-high both failed with PC3 high, restore PB1 to the stock DTS
+        active-low level and move to explicit DWC2 VBUS ownership.
+
+Experiment: DWC2 explicit VBUS supply with stock PB1 level
+    Code change:
+        Restore the stock-named Wi-Fi enable level:
+
+            wifi_vcc_en:
+                gpio = <&gpio2 RK_PB1 GPIO_ACTIVE_LOW>;
+
+        Keep PC3 high:
+
+            vcc_host:
+                gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+
+        Keep DWC2-only USB topology and attach the host 5V regulator
+        directly to the DWC2 controller:
+
+            &usb20_otg:
+                vbus-supply = <&vcc_host>;
+                status = "okay";
+
+            &usb_host0_ehci:
+                status = "disabled";
+
+            &usb_host0_ohci:
+                status = "disabled";
+
+    Rationale:
+        The prior DWC2/PC3-high result showed the USB controller using
+        dummy vusb_a/vusb_d supplies.  This test checks whether mainline
+        DWC2 needs explicit VBUS ownership to bring up the internal USB
+        device, while reverting PB1 to the stock DTS active-low level.
+
+    Expected result:
+        The regulator summary should show the DWC2 controller consuming
+        vcc_host rather than only dummy supplies.  If the Realtek device
+        appears as 0bda:8179 or 0bda:0179, keep this topology and return
+        to driver binding.  If it still does not appear, the next step is
+        a sequencing/reset experiment rather than another static USB
+        controller selection.
+
+    Build verification:
+        Built ROCKNIX-RK3326.aarch64-20260427 successfully.
+
+        Generated images:
+
+            target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz
+            sha256 8237ac7dfc67498a7ebd4179981730d33c48168b7a9e94d42c512a9d82ee35ff
+
+            target/ROCKNIX-RK3326.aarch64-20260427-b.img.gz
+            sha256 fa71163eaeba37f4b02eb0d65eb71bf0cad029058ba2bd7f9a239dcb3d30d604
+
+        Verified generated DTB:
+
+            vcc_host:
+                gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+
+            wifi_vcc_en:
+                gpio = <&gpio2 RK_PB1 GPIO_ACTIVE_LOW>;
+
+            usb@ff300000:
+                dr_mode = "otg";
+                role-switch-default-mode = "host";
+                vbus-supply = <&vcc_host>;
+                status = "okay";
+
+            usb@ff340000:
+                status = "disabled";
+
+            usb@ff350000:
+                status = "disabled";
+
+    Exact test requested:
+        Flash this image, boot, test Wi-Fi scan, then reinsert the SD
+        card so the boot logs can be inspected directly.
+
+    Observed result:
+        The image booted with the requested GPIO and USB regulator state:
+
+            gpio-73  regulator-wifi-vcc-e  out lo ACTIVE LOW
+            gpio-115 regulator-vcc-host     out hi
+
+        USB topology was DWC2-only:
+
+            usb1 idVendor=1d6b idProduct=0002
+            manufacturer="Linux 6.12.79 dwc2_hsotg"
+            product="DWC OTG Controller"
+            serial="ff300000.usb"
+
+        The explicit VBUS supply was active and consumed by DWC2:
+
+            vcc_host:
+                ff300000.usb-vbus
+                phy-ff2c0000.syscon:usb2phy@100.3-phy
+                phy-ff2c0000.syscon:usb2phy@100.2-phy
+
+        DWC2 still used dummy vusb_a/vusb_d supplies, but it did look up
+        and consume vbus-supply from the device tree.
+
+        No Realtek child device appeared:
+
+            no 0bda:8179
+            no 0bda:0179
+            no wlan interface
+            iw dev is empty
+
+    Conclusion:
+        Explicit DWC2 VBUS ownership does not make the RTL8188EUS
+        enumerate.  Static USB controller selection, PC3 polarity, PB1
+        polarity, and DWC2 vbus-supply have all failed.  The most useful
+        next step is to instrument the working stock image and compare
+        its boot-time USB/GPIO/regulator sequence against ROCKNIX before
+        adding more guesses.
+
+    Observed result:
+        The GPIO polarity changed as intended:
+
+            gpio-115 regulator-vcc-host out hi
+
+        DWC2 probed cleanly and was the only USB root hub:
+
+            usb1 idVendor=1d6b idProduct=0002
+            manufacturer="Linux 6.12.79 dwc2_hsotg"
+            product="DWC OTG Controller"
+            serial="ff300000.usb"
+
+        No Realtek child device appeared:
+
+            no 0bda:8179
+            no 0bda:0179
+            no wlan interface
+            iw dev is empty
+
+        Power state remained asserted:
+
+            gpio-73  regulator-wifi-vcc-e  out lo ACTIVE LOW
+            gpio-115 regulator-vcc-host     out hi
+
+        Regulator summary shows vcc_wifi, wifi_vcc_en, and vcc_host
+        enabled.  The DWC2 node did not have an explicit vbus-supply and
+        used dummy vusb_a/vusb_d supplies.
+
+    Conclusion:
+        PC3 active-high is now verified electrically at the GPIO level,
+        but it does not make the RTL8188EUS enumerate on the clean DWC2
+        topology.  The next matrix entry should keep PC3 active-high and
+        test EHCI/OHCI-only, because the previous EHCI/OHCI test used
+        PC3 active-low.
+
+Experiment: EHCI/OHCI-only with vcc_host active-high
+    Code change:
+        Keep the 5V host regulator active-high and switch USB topology
+        back to host-port controllers only:
+
+            vcc_host:
+                gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+
+            wifi_vcc_en:
+                remains <&gpio2 RK_PB1 GPIO_ACTIVE_LOW>;
+
+            &usb20_otg:
+                status = "disabled";
+
+            &usb_host0_ehci:
+                status = "okay";
+
+            &usb_host0_ohci:
+                status = "okay";
+
+    Rationale:
+        This completes the paired test against the previous EHCI/OHCI
+        isolation result.  If PC3 polarity was the missing 5V enable and
+        the RTL8188EUS is wired to the host-port PHY, this combination
+        should enumerate it.
+
+    Expected result:
+        The USB root hubs should be EHCI/OHCI only.  If the Realtek
+        device appears, keep PC3 active-high and the host-port topology.
+        If it still does not appear, PC3 polarity and USB controller path
+        are not sufficient to explain enumeration failure.
+
+    Build verification:
+        Built ROCKNIX-RK3326.aarch64-20260427 successfully.
+
+        Generated images:
+
+            target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz
+            sha256 5095531f0f4cecb5ca3cfb28d2d39d2e5aad843fd3303732e2723ca935ac3fd4
+
+            target/ROCKNIX-RK3326.aarch64-20260427-b.img.gz
+            sha256 388490536c14a41f8f4c9fad1f038c317a5d78321bbb21dd78ddfddd2779d8a2
+
+        Verified generated DTB:
+
+            vcc_host:
+                gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+
+            wifi_vcc_en:
+                gpio = <&gpio2 RK_PB1 GPIO_ACTIVE_LOW>;
+
+            usb@ff300000:
+                status = "disabled";
+
+            usb@ff340000:
+                status = "okay";
+
+            usb@ff350000:
+                status = "okay";
+
+    Exact test requested:
+        Flash this image, boot, test Wi-Fi scan, then reinsert the SD
+        card so the boot logs can be inspected directly.
+
+    Observed result:
+        The topology changed exactly as intended.  The only USB root hubs
+        are now EHCI/OHCI:
+
+            usb1 idVendor=1d6b idProduct=0002
+            manufacturer="Linux 6.12.79 ehci_hcd"
+            product="EHCI Host Controller"
+            serial="ff340000.usb"
+
+            usb2 idVendor=1d6b idProduct=0001
+            manufacturer="Linux 6.12.79 ohci_hcd"
+            product="Generic Platform OHCI controller"
+            serial="ff350000.usb"
+
+        DWC2 is absent, as expected.  No Realtek child device appears on
+        either host controller:
+
+            no 0bda:8179
+            no 0bda:0179
+            no wlan interface
+            iw dev is empty
+
+        The power GPIOs are still asserted:
+
+            gpio-73  regulator-wifi-vcc-e  out lo ACTIVE LOW
+            gpio-115 regulator-vcc-host     out lo ACTIVE LOW
+
+        Regulator summary shows vcc_wifi, wifi_vcc_en, and vcc_host
+        enabled.  vcc_host is consumed by both u2phy port supplies.
+
+    Conclusion:
+        The RTL8188EUS does not enumerate on a clean EHCI/OHCI-only
+        host-port topology either.  This strongly weakens the "wrong USB
+        controller path" hypothesis.  The remaining blocker is likely
+        power/reset/enable sequencing, an unmodeled board GPIO, or a
+        vendor-kernel USB PHY behavior difference rather than driver
+        binding.
+
+Experiment: DWC2 clean topology with vcc_host active-high
+    Code change:
+        Invert only the 5V host regulator GPIO and return USB to the
+        clean DWC2 topology:
+
+            vcc_host:
+                gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+
+            wifi_vcc_en:
+                remains <&gpio2 RK_PB1 GPIO_ACTIVE_LOW>;
+
+            &usb20_otg:
+                status = "okay";
+
+            &usb_host0_ehci:
+                status = "disabled";
+
+            &usb_host0_ohci:
+                status = "disabled";
+
+    Rationale:
+        The shipped RPPocket DTS marks vcc5v_en_gpio as active-low, but
+        the vendor panel driver ignores GPIO flags and drives the raw
+        value 1 during panel prepare:
+
+            gpio_set_value(p->vcc5v_en_gpio, 1);
+
+        Earlier testing tried PC3 active-high before the separate PB1
+        Wi-Fi enable regulator was added.  This test checks the combined
+        condition: PC3 high for 5V plus PB1 low for Wi-Fi power.
+
+    Expected result:
+        If the previous failures were caused by PC3 polarity, the
+        RTL8188EUS should finally enumerate as 0bda:8179 or 0bda:0179
+        under the DWC2 root hub.  If it still does not enumerate, the
+        next matrix entry should keep PC3 active-high and test the
+        EHCI/OHCI-only topology.
+
+    Build verification:
+        Built ROCKNIX-RK3326.aarch64-20260427 successfully.
+
+        Generated images:
+
+            target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz
+            sha256 4a2299eb34eeeb9ccb420d60020897263e0cdaea7a5a9d5b5aabec3cb01f8107
+
+            target/ROCKNIX-RK3326.aarch64-20260427-b.img.gz
+            sha256 61ec3c57484923d0f0894ccd0305415cf5f045acfd893a27c88cf844f03508d1
+
+        Verified generated DTB:
+
+            vcc_host:
+                gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
+                enable-active-high;
+
+            wifi_vcc_en:
+                gpio = <&gpio2 RK_PB1 GPIO_ACTIVE_LOW>;
+
+            usb@ff300000:
+                status = "okay";
+                dr_mode = "otg";
+                role-switch-default-mode = "host";
+
+            usb@ff340000:
+                status = "disabled";
+
+            usb@ff350000:
+                status = "disabled";
+
+    Exact test requested:
+        Flash this image, boot, test Wi-Fi scan, then reinsert the SD
+        card so the boot logs can be inspected directly.
+
+    Observed result:
+        The SD card logs show that DWC2 still probes with the OTG PHY
+        enabled and the previous "Requested PHY is disabled" error is
+        gone.  The USB topology is only the DWC2 root hub:
+
+            usb1 idVendor=1d6b idProduct=0002
+            manufacturer="Linux 6.12.79 dwc2_hsotg"
+            product="DWC OTG Controller"
+            serial="ff300000.usb"
+
+        EHCI/OHCI remain disabled.  No Realtek USB child device appears:
+
+            no 0bda:8179
+            no 0bda:0179
+            no wlan interface
+            iw dev is empty
+
+        The corrected power GPIOs are still asserted:
+
+            gpio-73  regulator-wifi-vcc-e  out lo ACTIVE LOW
+            gpio-115 regulator-vcc-host     out lo ACTIVE LOW
+
+        Regulator logs show vcc_wifi, wifi_vcc_en, and vcc_host enabled.
+
+    Conclusion:
+        Enabling the mainline OTG PHY makes the DWC2 topology clean, but
+        it still does not enumerate the RTL8188EUS.  The failure remains
+        before driver binding.
+
+Experiment: host-port isolation with only EHCI/OHCI
+    Code change:
+        Disable the DWC2 OTG controller and enable only the RK3326
+        host-port controllers:
+
+            &usb20_otg {
+                status = "disabled";
+            };
+
+            &usb_host0_ehci {
+                status = "okay";
+            };
+
+            &usb_host0_ohci {
+                status = "okay";
+            };
+
+    Rationale:
+        Earlier tests had EHCI/OHCI active before the RPPocket power
+        GPIOs were corrected, and then later matched the factory shape by
+        using only DWC2.  This isolates the other physical USB path after
+        the vcc_host and wifi_vcc_en GPIOs are known to be asserted.  If
+        the RTL8188EUS appears here, the module is wired to the host-port
+        path and the factory DWC2-looking DTS is misleading or depends on
+        vendor 4.4 USB behavior.
+
+    Expected result:
+        The USB root hubs should be EHCI/OHCI only.  If the Realtek
+        0bda:8179 or 0bda:0179 device appears, keep this topology and
+        move back to driver binding.  If not, USB path selection is
+        likely not the remaining blocker.
+
+    Build verification:
+        Built ROCKNIX-RK3326.aarch64-20260427 successfully.
+
+        Generated images:
+
+            target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz
+            sha256 ccb33fdd82bf22a76f97b4abf335ae7bbe2d148c880cc1aad3d07cfef687351d
+
+            target/ROCKNIX-RK3326.aarch64-20260427-b.img.gz
+            sha256 148c144a871ce7635f2afdd0347b585ea3beafece102fe877e92936cd6324a11
+
+        Verified generated DTB:
+
+            u2phy host-port:
+                status = "okay";
+                phy-supply = <&vcc_host>;
+
+            u2phy otg-port:
+                status = "okay";
+                phy-supply = <&vcc_host>;
+
+            usb@ff300000:
+                status = "disabled";
+
+            usb@ff340000:
+                status = "okay";
+
+            usb@ff350000:
+                status = "okay";
+
+    Exact test requested:
+        Flash this image, boot, test Wi-Fi scan, then reinsert the SD
+        card so the boot logs can be inspected directly.
+
+    Observed result from mounted SD logs:
+        DWC2 still probes, but Linux 6.12 reports:
+
+            rockchip-usb2phy ff2c0000.syscon:usb2phy@100: Requested PHY is disabled
+
+        The RTL8188EUS still does not enumerate:
+
+            - only usb1 / DWC OTG Controller is present
+            - no 0bda:8179 or 0bda:0179 device
+            - no wlan interface
+            - iw dev remains empty
+
+        The power GPIOs are still asserted:
+
+            gpio2 PB1  wifi_vcc_en: out lo ACTIVE LOW
+            gpio3 PC3  vcc_host:    out lo ACTIVE LOW
+
+    Decision / next step:
+        Do not keep u2phy_otg disabled under the mainline 6.12 PHY
+        model; the vendor 4.4 tree tolerated that board/source shape,
+        but current logs show it is wrong for this kernel.
+
+        The next focused experiment should:
+
+            - restore u2phy_otg status = "okay"
+            - keep EHCI/OHCI disabled
+            - leave usb20_otg on the px30.dtsi default role-switch
+              configuration rather than forcing dr_mode = "host"
+            - add the factory charger extcon relationship:
+              extcon = <&u2phy>
+
+        This keeps the DWC2 PHY valid while testing the remaining
+        factory USB role/charger wiring.
+
+Experiment: factory USB topology, phase 3
+    Code change:
+        Restored u2phy_otg for Linux 6.12:
+
+            u2phy_otg: otg-port {
+                status = "okay";
+            };
+
+        Kept:
+
+            &usb20_otg {
+                status = "okay";
+            };
+
+        without the board-level dr_mode/vbus-supply override, so the
+        px30.dtsi default remains:
+
+            dr_mode = "otg";
+            usb-role-switch;
+            role-switch-default-mode = "host";
+
+        Added the factory relationship to the charger node:
+
+            &rk817_charger {
+                extcon = <&u2phy>;
+                monitored-battery = <&battery>;
+            };
+
+    Rationale:
+        Phase 2 proved that disabling u2phy_otg is not appropriate for
+        the mainline 6.12 PHY driver.  This phase keeps the PHY valid
+        while testing whether the missing factory extcon link affects
+        USB role behavior.
+
+    Expected result:
+        DWC2 should probe without the "Requested PHY is disabled" line.
+        If the RTL8188EUS appears, Wi-Fi driver binding is next.  If it
+        still does not appear, remaining candidates are below the normal
+        USB role layer: a missing non-DTS power/reset sequence, a
+        different active level, or the internal device being wired to a
+        different controller path than the factory DTS suggests.
+
+    Build verification:
+        Built ROCKNIX-RK3326.aarch64-20260427 successfully.
+
+        Generated images:
+
+            target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz
+            sha256 239e74e1b737663b0eee1eb9abe28921fcbc027926a6a648c4acae486bed33a7
+
+            target/ROCKNIX-RK3326.aarch64-20260427-b.img.gz
+            sha256 05a828898bc953ede7c8d44b002f3cd6c2092b7a26a0431f09f9b72d70068b22
+
+        Verified generated DTB:
+
+            rk817 charger:
+                extcon = <&u2phy>;
+
+            u2phy host-port:
+                status = "okay";
+
+            u2phy otg-port:
+                status = "okay";
+
+            usb@ff300000:
+                dr_mode = "otg";
+                role-switch-default-mode = "host";
+                status = "okay";
+
+            usb@ff340000:
+                status = "disabled";
+
+            usb@ff350000:
+                status = "disabled";
+
+    Exact test requested:
+        Flash this image, boot, test Wi-Fi scan, then reinsert the SD
+        card so the boot logs can be inspected directly.
+
+    Observed result from mounted SD logs:
+        The USB topology change took effect:
+
+            - only usb1 / DWC OTG Controller is present
+            - EHCI ff340000 is no longer registered
+            - OHCI ff350000 is no longer registered
+
+        The RTL8188EUS still does not enumerate:
+
+            - no 0bda:8179 or 0bda:0179 device
+            - no child device under the DWC2 root hub
+            - no wlan interface
+            - iw dev remains empty
+
+        Power GPIOs are still asserted:
+
+            gpio2 PB1  wifi_vcc_en: out lo ACTIVE LOW
+            gpio3 PC3  vcc_host:    out lo ACTIVE LOW
+
+    Decision / next step:
+        The failure is still before driver binding.  Since EHCI/OHCI are
+        now ruled out, compare the remaining DWC2 role/PHY-port details.
+
+        Factory source:
+
+            &u2phy {
+                u2phy_host: host-port { status = "okay"; };
+                u2phy_otg: otg-port { status = "disabled"; };
+            };
+
+            &usb20_otg {
+                status = "okay";
+            };
+
+        Current ROCKNIX RPPocket DTS still differs by forcing:
+
+            - u2phy_otg status = "okay"
+            - usb20_otg dr_mode = "host"
+            - usb20_otg vbus-supply = <&vcc_host>
+
+        Next experiment should match the factory role/PHY shape more
+        closely and test whether current Linux 6.12 DWC2 still probes.
+
+Experiment: factory USB topology, phase 2
+    Code change:
+        Match the shipped RPPocket source more closely:
+
+            u2phy_otg: otg-port {
+                status = "disabled";
+            };
+
+            &usb20_otg {
+                status = "okay";
+            };
+
+        Removed the RPPocket board override that forced:
+
+            dr_mode = "host";
+            vbus-supply = <&vcc_host>;
+
+    Rationale:
+        Linux 6.12 px30.dtsi already defaults usb20_otg to dr_mode =
+        "otg" and uses u2phy_otg.  The factory RPPocket DTS only enables
+        usb20_otg and disables the OTG PHY subnode.  This test checks
+        whether the remaining role/PHY difference is preventing the
+        internal RTL8188EUS from appearing.
+
+    Expected result:
+        Best case: DWC2 still probes and the RTL8188EUS appears.  If
+        DWC2 no longer probes, the disabled otg-port does not translate
+        directly to the mainline 6.12 PHY model and should be reverted
+        or replaced with a more targeted role-switch/extcon change.
+
+    Build verification:
+        Built ROCKNIX-RK3326.aarch64-20260427 successfully.
+
+        Generated images:
+
+            target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz
+            sha256 162eed7ed505219aee5dc1ec63fd6978d8c96e36761da0c7f187b9fbdc198931
+
+            target/ROCKNIX-RK3326.aarch64-20260427-b.img.gz
+            sha256 937358ecc394355b1a4d86f15854f4545f95d3a2c6a1b202772b3ba6a90fc73c
+
+        Verified generated DTB:
+
+            u2phy host-port:
+                status = "okay";
+
+            u2phy otg-port:
+                status = "disabled";
+
+            usb@ff300000:
+                dr_mode = "otg";
+                role-switch-default-mode = "host";
+                status = "okay";
+
+            usb@ff340000:
+                status = "disabled";
+
+            usb@ff350000:
+                status = "disabled";
+
+    Exact test requested:
+        Flash this image, boot, test Wi-Fi scan, then reinsert the SD
+        card so the boot logs can be inspected directly.

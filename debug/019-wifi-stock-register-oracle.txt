@@ -1,0 +1,432 @@
+2026-04-27 - Wi-Fi stock register oracle
+========================================
+
+Goal
+----
+Use the working stock image as the primary source for the remaining
+RTL8188EUS enumeration problem.  ROCKNIX now matches the obvious stock
+steady-state controls, but the Realtek USB device still does not appear.
+The next useful evidence is a direct stock-working vs ROCKNIX-failing
+comparison below the normal Linux device model.
+
+Known state
+-----------
+Stock v1.1.3:
+
+    - enumerates RTL8188EUS as USB 0bda:8179
+    - uses DWC2 at ff300000
+    - has RK817 LDO9/vcc_wifi enabled
+    - has RK817 boost/otg_switch behavior for USB VBUS
+    - has GPIO115/vcc5v_en_gpio out hi
+    - does not use GPIO73/PB1 as a Wi-Fi regulator
+
+ROCKNIX:
+
+    - has vcc_wifi enabled at 3300mV
+    - has otg_switch enabled at 5000mV and feeding ff300000.usb-vbus
+    - has GPIO115/vcc5v-en out hi
+    - has DWC2 root hub 1d6b:0002
+    - does not enumerate 0bda:8179
+
+Decision
+--------
+Stop guessing additional DTS topology.  Instrument stock and ROCKNIX with
+the same passive low-level capture:
+
+    - /proc/iomem filtered for USB/PHY/GRF ranges
+    - /sys/kernel/debug/clk/clk_summary filtered for USB/PHY clocks
+    - /sys/kernel/debug/pinctrl/*/pinmux-pins filtered for USB/gpio2/gpio3
+    - /sys/kernel/debug/gpio
+    - regulator summary
+    - devmem read-only windows:
+        - 0xff010000 PMU GRF
+        - 0xff140000 GRF
+        - 0xff2c0000 USB2 PHY GRF
+        - 0xff300000 DWC2 core
+        - 0xff300400 DWC2 host registers
+
+These reads must be passive.  Do not write MMIO registers from the debug
+hook.
+
+Implementation
+--------------
+Updated:
+
+    debug/stock-custom_start.sh
+    debug/pre.sh
+
+Both scripts now contain a matching dump_lowlevel_usb_state helper.  The
+ROCKNIX hook captures:
+
+    - rocknix-early
+    - rocknix-late-before-rebind
+    - rocknix-late-after-rebind
+
+The stock hook captures the same low-level sections in every existing
+stock snapshot:
+
+    - early_before
+    - before_2s
+    - before_10s
+    - before_40s
+    - after
+    - after_10s
+
+Expected test
+-------------
+First capture ROCKNIX-failing state by installing the updated hook on the
+current ROCKNIX card without reflashing:
+
+    sudo ./debug/pre.sh /dev/<sdX>
+
+Boot, wait at least 3 minutes, shut down, reinsert the card, and inspect
+the refreshed rppocket-debug.txt and rppocket-late.txt.
+
+Then refresh the stock debug image with the updated stock-custom_start.sh,
+flash it, confirm stock Wi-Fi still scans, reinsert the card, and compare
+the low-level sections against ROCKNIX.
+
+Observed result
+---------------
+ROCKNIX capture completed.
+
+    Refreshed logs on the ROCKNIX card include:
+
+        - lowlevel usb state: rocknix-early
+        - lowlevel usb state: rocknix-late-before-rebind
+        - lowlevel usb state: rocknix-late-after-rebind
+
+    Confirmed failing state remains unchanged:
+
+        - DWC2 root hub only: 1d6b:0002
+        - no 0bda:8179
+        - no 8188 driver activity
+        - no wlan0
+        - GPIO115/vcc5v-en is out hi
+        - vcc_wifi is enabled
+        - otg_switch is enabled and feeds ff300000.usb-vbus
+
+    Useful ROCKNIX low-level facts:
+
+        - clk_usbphy_ref is enabled at 24 MHz
+        - usb480m_phy and usb480m are enabled at 480 MHz
+        - hclk_otg is enabled at 150 MHz
+        - pclk_usb_grf is enabled at 100 MHz
+        - first USB2 PHY GRF word at 0xff2c0000 reads 0x00008518
+        - first DWC2 core word at 0xff300000 reads 0x002c000c
+
+    Instrumentation correction:
+
+        The initial script tried to read 0xff100000 as GRF, but this is
+        not the PX30/RK3326 GRF range in this tree and causes devmem bus
+        errors on ROCKNIX.  The hook was corrected to use 0xff140000 for
+        GRF, matching px30.dtsi.  PMU GRF remains 0xff010000, USB2 PHY
+        GRF remains 0xff2c0000, and DWC2 remains 0xff300000.
+
+Stock image refresh:
+    Re-injected the corrected stock-custom_start.sh into:
+
+        debug/v1.1.3-stock-debug-4g.img
+
+    The injected file is:
+
+        /.config/custom_start.sh
+        mode 0755
+
+    New image hash:
+
+        ee22d8b44b03e8fb41ccdce75bb55e1c81ebe42893ca58294a3efa38dca93a9b  debug/v1.1.3-stock-debug-4g.img
+
+Stock boot failure:
+    The first refreshed stock image did not boot.  When the card was
+    reinserted, both partitions failed to mount from the SD and the block
+    device then disappeared from the host, so no stock log could be read.
+
+    The local image file itself still had valid embedded filesystems:
+
+        - FAT32 boot partition detected
+        - ext4 STORAGE partition detected
+
+    Risk assessment:
+
+        The stock hook had been expanded to run many devmem reads.  Even
+        though those reads are passive, this is too much risk for the
+        first stock comparison because stock boot is our oracle.  Keep the
+        stock run conservative and collect clocks, pinctrl, GPIOs,
+        regulators, USB devices, modules, and dmesg first.
+
+Safe stock refresh:
+    Updated debug/stock-custom_start.sh so devmem reads are skipped by
+    default.  They only run when RPP_ENABLE_DEVMEM=1 is set.
+
+    Re-injected the safer hook into:
+
+        debug/v1.1.3-stock-debug-4g.img
+
+    New safe image hash:
+
+        d62f9c9c32d434e11e4eae31b6acb7913c9c2c38a30ac857100129a822c6d7d6  debug/v1.1.3-stock-debug-4g.img
+
+    Local filesystem validation:
+
+        - fsck.vfat -n: no write performed; only reports boot-sector/root
+          label mismatch already present in the image
+        - fsck.ext4 -fn: STORAGE clean
+
+Next test:
+    Flash the safe debug/v1.1.3-stock-debug-4g.img, boot stock, confirm
+    Wi-Fi scan still works, shut down, reinsert the SD card, and inspect
+    the new /storage/rppocket-stock-debug-*.txt log.  Compare its
+    non-MMIO lowlevel usb state sections against the ROCKNIX captures
+    above.
+
+Safe stock result:
+    Passed.  The safe stock debug image booted and produced:
+
+        /storage/rppocket-stock-debug-1706104708.txt
+        /storage/rppocket-stock-debug-1706104734.txt
+
+    Stock Wi-Fi working state:
+
+        - USB device 0bda:8179 is present
+        - product is the Realtek 802.11n NIC
+        - driver is /sys/bus/usb/drivers/rtl8188eu
+        - modules 8188eu and r8188eu are loaded
+        - wlan0 exists
+
+    Stock timing:
+
+        - Rockchip WiFi SYS interface initializes at ~1.50s
+        - vcc_wifi reaches 3300mV at ~1.70s
+        - panel parses GPIO115/vcc5v_en_gpio at ~2.54s
+        - panel enable path runs at ~2.85s
+        - DWC2 does not probe until ~22.65s
+        - DWC2 logs "Configuration mismatch. dr_mode forced to host"
+        - DWC2 root hub appears at ~22.68s
+        - Realtek USB device 0bda:8179 appears at ~23.24s
+        - rtl8188eu initializes at ~23.31s
+        - wlan0 is created at ~25.86s
+
+    Stock steady-state comparison:
+
+        - vcc_wifi is 3300mV in both stock and ROCKNIX
+        - boost/otg_switch is 5000mV in both stock and ROCKNIX
+        - GPIO115 is high in both stock and ROCKNIX
+        - clk_usbphy_ref is 24MHz in both stock and ROCKNIX
+        - usb480m_phy/usb480m are 480MHz in both stock and ROCKNIX
+        - hclk_otg is 150MHz in both stock and ROCKNIX
+
+    Notable differences:
+
+        - Stock delays DWC2 probing until ~22.65s; ROCKNIX probes at
+          ~1.62s.
+        - Stock lets DWC2 use dummy vusb_d/vusb_a supplies and does not
+          expose ff300000.usb-vbus as an otg_switch consumer in the same
+          way ROCKNIX does.
+        - Stock pinctrl shows GPIO115 owned by the DSI panel node
+          function lcd_rst group lcd-rst-gpio, while ROCKNIX currently
+          holds GPIO115 high with a gpio-hog.
+        - Stock pinctrl also shows GPIO73/gpio2-9 owned by DSI panel
+          lcd_rst group; ROCKNIX leaves gpio2-9 unclaimed.  Stock
+          confirms gpio2-9 is not a Wi-Fi power GPIO.
+
+Refined conclusion:
+    Timing alone is not enough.  A previous ROCKNIX experiment already
+    delayed the first DWC2 root-hub probe until approximately the same
+    boot window as stock and still did not enumerate 0bda:8179.
+
+    The strongest remaining stock-derived lead is GPIO115 ownership and
+    sequencing.  Stock does not hold GPIO115 high with a gpio-hog.  The
+    vendor panel driver requests the panel vcc5v_en_gpio, drives it low
+    at probe, then drives it high during panel prepare before DWC2 sees
+    the Realtek device.  ROCKNIX currently holds GPIO115 high from boot
+    with a gpio-hog, and the clean JDI panel driver does not know about
+    the vendor vcc5v_en_gpio property.
+
+Next experiment:
+    Move GPIO115 from a gpio-hog into the JDI panel driver as a standard
+    optional enable-gpios line:
+
+        - add enable_gpio to panel-jdi-lt031mdz4000
+        - request "enable" with GPIOD_OUT_LOW at probe
+        - set enable high during panel prepare
+        - set enable low during unprepare/failure
+        - add enable-gpios = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH> to the
+          RPPocket panel node
+        - remove the vcc5v-en GPIO hog
+
+    Success condition is still Realtek USB enumeration as 0bda:8179 and
+    wlan0 creation.  A display regression would also be important because
+    this changes panel power sequencing.
+
+Build result:
+    Built successfully with make docker-RK3326 after fixing the new-file
+    patch hunk length in 002-panel-jdi-lt031mdz4000.patch.  The built
+    DTB decompiles with:
+
+        panel@0 enable-gpios = <gpio3 RK_PC3 GPIO_ACTIVE_HIGH>
+
+    and no vcc5v-en gpio-hog.  The amp GPIO hog remains unchanged.
+    The built panel driver requests optional "enable" GPIO and toggles it
+    low at probe/unprepare/failure and high during prepare.
+
+Next test:
+    Flash target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz, boot the
+    device, confirm whether the display still works, wait at least three
+    minutes, try a Wi-Fi scan, then shut down and reinsert the SD card for
+    direct log inspection.
+
+Observed result:
+    The image booted and the debug hook captured late logs.
+
+    The no-vbus-supply change applied correctly:
+
+        - DWC2 reports missing vbus-supply and uses no explicit VBUS
+          regulator
+        - regulator summary no longer shows ff300000.usb-vbus as an
+          otg_switch consumer
+        - vusb_a and vusb_d remain dummy regulator consumers
+        - vcc_wifi remains 3300mV
+        - otg_switch remains 5000mV
+        - GPIO115 remains claimed as "enable" and output high
+
+    Wi-Fi still does not enumerate:
+
+        - DWC2 creates only the root hub at boot
+        - no 0bda:8179 USB device appears
+        - no 8188/rtl driver activity appears
+        - no wlan0 appears
+        - the delayed unbind/rebind at roughly 100s still recreates only
+          the root hub
+
+    This rules out the explicit usb20_otg vbus-supply as a sufficient
+    fix.  Keep the no-vbus-supply model for now because it is closer to
+    the stock regulator summary.
+
+Next experiment:
+    Build DWC2 as host-only instead of dual-role for RK3326.  Stock/RG
+    factory-style configs use CONFIG_USB_DWC2_HOST=y, while ROCKNIX RK3326
+    currently uses CONFIG_USB_DWC2_DUAL_ROLE=y and relies on dr_mode =
+    "host" in DTS.  Since failure is at USB enumeration, test the
+    stock-like host-only DWC2 path before returning to GPIO/pinctrl
+    hypotheses.
+
+Build result:
+    Built successfully with make docker-RK3326.
+
+    Verified final kernel config:
+
+        CONFIG_USB_DWC2=y
+        CONFIG_USB_DWC2_HOST=y
+        # CONFIG_USB_DWC2_PERIPHERAL is not set
+        # CONFIG_USB_DWC2_DUAL_ROLE is not set
+
+    Verified the built RPPocket DTB still has usb@ff300000 with:
+
+        dr_mode = "host";
+        status = "okay";
+
+    and no vbus-supply property.
+
+    Generated images:
+
+        eae4150b497276172105655bb5740bca6e33e560f6f552a13c11582dce975ab3  target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz
+        84cff35a99e0c172f69ae795b61cfd6153801248563f86c71702ae6e0f9611d9  target/ROCKNIX-RK3326.aarch64-20260427-b.img.gz
+
+Next test:
+    Flash target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz, boot the
+    device, confirm whether display/input still works, wait at least
+    three minutes, try a Wi-Fi scan, then shut down and reinsert the SD
+    card for direct log inspection.
+
+Observed result:
+    The image booted and late logs were captured.
+
+    Host-only DWC2 did not change the failure mode:
+
+        - DWC2 still probes at roughly 0.92s
+        - DWC2 still creates only the root hub
+        - no USB 0bda:8179 device appears
+        - no 8188/rtl driver activity appears
+        - no wlan0 appears
+        - the delayed unbind/rebind at roughly 99s still recreates only
+          the root hub
+
+    The expected support state remains present:
+
+        - vcc_wifi is 3300mV
+        - otg_switch is 5000mV
+        - usb@ff300000 has dummy vusb_a/vusb_d consumers and no explicit
+          vbus-supply
+        - clk_usbphy_ref is 24MHz
+        - usb480m_phy/usb480m are 480MHz
+        - hclk_otg is 150MHz
+        - GPIO115 remains claimed as "enable" and output high
+
+Conclusion:
+    This closes the stock-register-oracle DTS/config guess phase.  The
+    stock-derived obvious controls are now either matched or tested:
+
+        - vcc_wifi
+        - boost/otg_switch
+        - GPIO115 panel enable sequencing
+        - no explicit DWC2 vbus-supply
+        - DWC2 host-only kernel config
+        - delayed DWC2 rebind/probe timing
+
+    None were sufficient.  The next useful work should not be another
+    broad DTS guess.  Since the original stock source can now be compiled
+    locally, switch to instrumented stock-kernel experiments that explain
+    why stock sees the downstream RTL8188EUS connect and ROCKNIX does not.
+
+Observed result:
+    The image booted far enough to run the debug hook and capture late
+    logs.  The panel-enable change worked mechanically:
+
+        - panel-jdi-lt031mdz4000 prepare ran successfully
+        - GPIO115 is now claimed as "enable"
+        - GPIO115 is output high in the late GPIO dump
+        - the old vcc5v-en gpio-hog is absent
+
+    Wi-Fi is still not enumerating:
+
+        - DWC2 creates only the root hub
+        - no 0bda:8179 USB device appears
+        - no 8188/rtl driver activity appears
+        - no wlan0 appears
+        - the delayed unbind/rebind still recreates only the root hub
+
+    This rules out GPIO115 panel-style sequencing as a sufficient fix.
+    It remains closer to stock than the gpio-hog model, so keep it unless
+    a later test shows a display or power regression.
+
+Next experiment:
+    Remove the explicit vbus-supply from usb20_otg while keeping the
+    RK817 charger/extcon binding and panel enable GPIO.  Stock's working
+    state uses dummy vusb_a/vusb_d supplies and does not expose
+    ff300000.usb-vbus as an otg_switch consumer in the regulator summary.
+    ROCKNIX still does.  This tests that stock-derived supply model
+    independently of the already-tested panel GPIO sequencing.
+
+Build result:
+    Built successfully with make docker-RK3326.
+
+    Generated images:
+
+        dc1b7ef0f92f85d633682a9380b12d017345f0f0de4e053f1ddedf80599fd033  target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz
+        1675632ababb87bf82330889eb9a870450e8b800a791d918bb14345df42c11f9  target/ROCKNIX-RK3326.aarch64-20260427-b.img.gz
+
+    The built DTB decompiles with:
+
+        usb@ff300000 {
+            dr_mode = "host";
+            status = "okay";
+        };
+
+    and no vbus-supply property on usb@ff300000.
+
+Next test:
+    Flash target/ROCKNIX-RK3326.aarch64-20260427-a.img.gz, boot the
+    device, confirm whether the display still works, wait at least three
+    minutes, try a Wi-Fi scan, then shut down and reinsert the SD card for
+    direct log inspection.

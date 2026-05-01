@@ -234,17 +234,6 @@
 		regulator-max-microvolt = <3800000>;
 	};
 
-	vcc_host: regulator-vcc-host {
-		compatible = "regulator-fixed";
-		regulator-name = "vcc_host";
-		regulator-min-microvolt = <5000000>;
-		regulator-max-microvolt = <5000000>;
-		gpio = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
-		enable-active-high;
-		regulator-always-on;
-		regulator-boot-on;
-		vin-supply = <&vccsys>;
-	};
 };
 
 &cpu0 {
@@ -306,6 +295,7 @@
 		iovcc-supply = <&vcc_lcd>;
 		vdd-supply = <&vcc_bl>;
 		reset-gpios = <&gpio3 RK_PC0 GPIO_ACTIVE_LOW>;
+		enable-gpios = <&gpio3 RK_PC3 GPIO_ACTIVE_HIGH>;
 
 		port {
 			mipi_in_panel: endpoint {
@@ -338,12 +328,17 @@
 		clock-output-names = "rk808-clkout1", "xin32k";
 		clock-names = "mclk";
 		clocks = <&cru SCLK_I2S1_OUT>;
-		pinctrl-names = "default";
+		pinctrl-names = "default", "pmic-sleep", "pmic-power-off", "pmic-reset";
 		pinctrl-0 = <&pmic_int>, <&i2s1_2ch_mclk>;
+		pinctrl-1 = <&soc_slppin_slp>, <&rk817_slppin_slp>;
+		pinctrl-2 = <&soc_slppin_gpio>, <&rk817_slppin_pwrdn>;
+		pinctrl-3 = <&soc_slppin_rst>, <&rk817_slppin_rst>;
 		rockchip,system-power-controller;
 		wakeup-source;
 		#clock-cells = <1>;
 		#sound-dai-cells = <0>;
+
+		pmic-reset-func = <1>;
 
 		vcc1-supply = <&vccsys>;
 		vcc2-supply = <&vccsys>;
@@ -354,6 +349,51 @@
 		vcc7-supply = <&vccsys>;
 		vcc8-supply = <&vccsys>;
 		vcc9-supply = <&dcdc_boost>;
+
+		pinctrl_rk8xx: pinctrl_rk8xx {
+			gpio-controller;
+			#gpio-cells = <2>;
+
+			rk817_ts_gpio1: rk817_ts_gpio1 {
+				pins = "gpio_ts";
+				function = "pin_fun1";
+			};
+
+			rk817_gt_gpio2: rk817_gt_gpio2 {
+				pins = "gpio_gt";
+				function = "pin_fun1";
+			};
+
+			rk817_pin_ts: rk817_pin_ts {
+				pins = "gpio_ts";
+				function = "pin_fun0";
+			};
+
+			rk817_pin_gt: rk817_pin_gt {
+				pins = "gpio_gt";
+				function = "pin_fun0";
+			};
+
+			rk817_slppin_null: rk817_slppin_null {
+				pins = "gpio_slp";
+				function = "pin_fun0";
+			};
+
+			rk817_slppin_slp: rk817_slppin_slp {
+				pins = "gpio_slp";
+				function = "pin_fun1";
+			};
+
+			rk817_slppin_pwrdn: rk817_slppin_pwrdn {
+				pins = "gpio_slp";
+				function = "pin_fun2";
+			};
+
+			rk817_slppin_rst: rk817_slppin_rst {
+				pins = "gpio_slp";
+				function = "pin_fun3";
+			};
+		};
 
 		regulators {
 			vdd_logic: DCDC_REG1 {
@@ -535,9 +575,19 @@
 		};
 
 		rk817_charger: charger {
+			compatible = "rk817,charger";
+			min_input_voltage = <4500>;
+			max_input_current = <1500>;
+			max_chrg_current = <2000>;
+			max_chrg_voltage = <4200>;
+			chrg_term_mode = <0>;
+			chrg_finish_cur = <52>;
+			virtual_power = <0>;
+			sample_res = <10>;
 			rockchip,resistor-sense-micro-ohms = <10000>;
 			rockchip,sleep-enter-current-microamp = <300000>;
 			rockchip,sleep-filter-current-microamp = <100000>;
+			extcon = <&u2phy>;
 		};
 
 		rk817_codec: codec {
@@ -620,27 +670,25 @@
 
 	u2phy_host: host-port {
 		status = "okay";
-		phy-supply = <&vcc_host>;
 	};
 
 	u2phy_otg: otg-port {
 		status = "okay";
-		phy-supply = <&vcc_host>;
 	};
 };
 
 &usb20_otg {
-	dr_mode = "host";
-	vbus-supply = <&vcc_host>;
+	/delete-property/ usb-role-switch;
+	/delete-property/ role-switch-default-mode;
 	status = "okay";
 };
 
 &usb_host0_ehci {
-	status = "okay";
+	status = "disabled";
 };
 
 &usb_host0_ohci {
-	status = "okay";
+	status = "disabled";
 };
 
 &uart2 {
@@ -658,15 +706,36 @@
 };
 
 &gpio0 {
+	wifi-vcc-en-hog {
+		gpio-hog;
+		gpios = <RK_PA1 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "wifi-vcc-en";
+	};
+
 	lcd-vspn-en-hog {
 		gpio-hog;
 		gpios = <RK_PA2 GPIO_ACTIVE_HIGH>;
 		output-high;
 		line-name = "lcd-vspn-en";
 	};
+
+	panel-vcc-en-sense-hog {
+		gpio-hog;
+		gpios = <RK_PB4 GPIO_ACTIVE_LOW>;
+		input;
+		line-name = "vcc_en_gpio";
+	};
 };
 
 &gpio3 {
+	stock-gpio114-hog {
+		gpio-hog;
+		gpios = <RK_PC2 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "stock-gpio114";
+	};
+
 	amp-en-hog {
 		gpio-hog;
 		gpios = <RK_PC5 GPIO_ACTIVE_HIGH>;
@@ -702,7 +771,21 @@
 
 	pmic {
 		pmic_int: pmic-int {
-			rockchip,pins = <0 RK_PB2 RK_FUNC_GPIO &pcfg_pull_up>;
+			rockchip,pins =
+				<0 RK_PB2 RK_FUNC_GPIO &pcfg_pull_up>,
+				<0 RK_PB3 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+
+		soc_slppin_gpio: soc-slppin-gpio {
+			rockchip,pins = <0 RK_PA4 RK_FUNC_GPIO &pcfg_output_low>;
+		};
+
+		soc_slppin_slp: soc-slppin-slp {
+			rockchip,pins = <0 RK_PA4 1 &pcfg_pull_none>;
+		};
+
+		soc_slppin_rst: soc-slppin-rst {
+			rockchip,pins = <0 RK_PA4 2 &pcfg_pull_none>;
 		};
 	};
 };

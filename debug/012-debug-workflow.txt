@@ -29,6 +29,45 @@ Two modes.
 
 Default device is /dev/sdd.  Override with positional /dev/sdX.
 
+SDWire3 helper
+--------------
+When the Wangerd/Badgerd SDWire3 is installed in the RPPocket SD slot,
+use debug/sdwire-load.sh to move the card between the Linux host and
+the device without physically removing it.  It wraps the sdwire CLI:
+
+    sudo ./debug/sdwire-load.sh list
+        List attached SDWire devices.
+
+    sudo ./debug/sdwire-load.sh host
+        Connect the SD card to the host so it appears as a block device.
+
+    sudo ./debug/sdwire-load.sh target
+        Connect the SD card to the RPPocket so the device can boot.
+
+    sudo ./debug/sdwire-load.sh rocknix --dev /dev/sdX
+        Switch to host, flash the newest ROCKNIX -a image through
+        debug/pre.sh --flash, install ROCKNIX debug hooks, then switch
+        back to target.
+
+    sudo ./debug/sdwire-load.sh stock --dev /dev/sdX
+        Switch to host, flash debug/v1.1.3-stock-debug-4g.img, then
+        switch back to target.
+
+Use --serial SERIAL if more than one SDWire is attached.  Use
+--no-target to leave the SD connected to the host after flashing, for
+example when inspecting partitions before booting the device.
+
+The helper expects the sdwire CLI from python3-sdwire / pip package
+"sdwire".  SDWire mode names are:
+
+    host/ts       card connected to the Linux host
+    target/dut    card connected to the RPPocket
+    off           card disconnected from both sides
+
+If sdwire is not in PATH, set SDWIRE explicitly:
+
+    sudo SDWIRE=/path/to/sdwire ./debug/sdwire-load.sh list
+
 What pre.sh installs on the SD's storage partition
 --------------------------------------------------
     /storage/.cache/journald.conf.d/persist.conf
@@ -97,6 +136,8 @@ End-to-end cycle
        to the SD, or when clean first-boot storage state matters.
        If only the debug hook or local ROM copy changed, use:
            sudo ./debug/pre.sh /dev/sdX
+       With SDWire3, prefer:
+           sudo ./debug/sdwire-load.sh rocknix --dev /dev/sdX
     4. Insert SD, power on RPPocket, wait ~3 min
     5. Long-press power to shut down (or, depending on what we changed,
        observe behaviour first)

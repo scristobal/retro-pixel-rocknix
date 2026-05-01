@@ -57,7 +57,7 @@ diff --git a/drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c b/drivers/gpu/drm/pa
 new file mode 100644
 --- /dev/null
 +++ b/drivers/gpu/drm/panel/panel-jdi-lt031mdz4000.c
-@@ -0,0 +1,279 @@
+@@ -0,0 +1,290 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * JDI LT031MDZ4000 3.1" 720x720 MIPI-DSI panel driver
@@ -86,6 +86,7 @@ new file mode 100644
 +	struct device *dev;
 +	struct drm_panel panel;
 +	struct gpio_desc *reset_gpio;
++	struct gpio_desc *enable_gpio;
 +	struct regulator *vdd;
 +	struct regulator *iovcc;
 +	enum drm_panel_orientation orientation;
@@ -137,6 +138,7 @@ new file mode 100644
 +	msleep(100);
 +
 +	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
++	gpiod_set_value_cansleep(ctx->enable_gpio, 0);
 +
 +	regulator_disable(ctx->iovcc);
 +	regulator_disable(ctx->vdd);
@@ -168,6 +170,9 @@ new file mode 100644
 +
 +	msleep(20);
 +
++	gpiod_set_value_cansleep(ctx->enable_gpio, 1);
++	msleep(5);
++
 +	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 +	usleep_range(10, 20);
 +	gpiod_set_value_cansleep(ctx->reset_gpio, 0);
@@ -187,6 +192,7 @@ new file mode 100644
 +
 +disable_iovcc:
 +	dev_err(ctx->dev, "prepare: failed (accum_err=%d)\n", dsi_ctx.accum_err);
++	gpiod_set_value_cansleep(ctx->enable_gpio, 0);
 +	regulator_disable(ctx->iovcc);
 +disable_vdd:
 +	regulator_disable(ctx->vdd);
@@ -261,6 +267,11 @@ new file mode 100644
 +	if (IS_ERR(ctx->reset_gpio))
 +		return dev_err_probe(dev, PTR_ERR(ctx->reset_gpio),
 +				     "cannot get reset gpio\n");
++
++	ctx->enable_gpio = devm_gpiod_get_optional(dev, "enable", GPIOD_OUT_LOW);
++	if (IS_ERR(ctx->enable_gpio))
++		return dev_err_probe(dev, PTR_ERR(ctx->enable_gpio),
++				     "cannot get enable gpio\n");
 +
 +	ctx->vdd = devm_regulator_get(dev, "vdd");
 +	if (IS_ERR(ctx->vdd))
