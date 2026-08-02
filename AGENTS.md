@@ -20,7 +20,7 @@ to build RK3326 images in Docker. Generated images should appear as `target/ROCK
 
 For hardware flashing, only prompt the user to run `debug/pre.sh --flash /dev/<sdX>` when an image or boot-critical artifact changed. The user performs device testing manually, then reinserts the SD card for inspection. Prefer mounting and reading the card directly over adding summary scripts.
 
-When a Wangerd/Badgerd SDWire3 is connected, prefer `debug/sdwire-load.sh` over manual SD insertion. Use `sudo ./debug/sdwire-load.sh rocknix --dev /dev/<sdX>` for the latest ROCKNIX image, `sudo ./debug/sdwire-load.sh stock --dev /dev/<sdX>` for `debug/v1.1.3-stock-debug-4g.img`, and `debug/sdwire-load.sh host|target|off` to move the card between host and RPPocket. The `sdwire` CLI must be installed separately; set `SDWIRE=/path/to/sdwire` if it is not in `PATH`.
+Do not use the Wangerd/Badgerd SDWire3 for this project. It has proved unreliable with the RPPocket workflow. Ask the user to flash with `debug/pre.sh`, test on the device, and reinsert the SD card for direct inspection.
 
 ## Coding Style & Naming Conventions
 

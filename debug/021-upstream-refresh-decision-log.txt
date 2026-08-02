@@ -1,0 +1,177 @@
+021 - UPSTREAM REFRESH BASELINE DECISION LOG
+==============================================================
+
+Purpose
+-------
+Refresh the RPPocket topic branch onto current ROCKNIX next before
+starting power-slider work.  Preserve the user's PICO-8 state first,
+resolve only concrete integration failures, build a full RK3326 image,
+and require a manual hardware baseline test before committing.
+
+
+2026-08-02 - Preserve PICO-8 state
+----------------------------------
+Hypothesis:
+    Flashing the refreshed image will replace the STORAGE filesystem,
+    so the complete PICO-8 installation and state tree must be captured
+    before the upstream refresh is tested.
+
+Change:
+    Mounted the existing STORAGE partition read-only and archived:
+
+        games-internal/roms/pico-8
+
+    Local archive:
+
+        debug/backups/rppocket-pico8-20260802-before-upstream.tar.gz
+
+    SHA-256:
+
+        cd9efd0d413aafced0120edc0ff589129bdd2116796d21eb879c7d965915de72
+
+Verification:
+    The 27 MB archive contains 345 entries. gzip integrity, archive
+    listing, checksum, and key-file checks passed. The archive is local
+    user data and must remain untracked.
+
+Observed result:
+    Backup completed and the source card was cleanly unmounted before
+    any branch or image changes.
+
+Decision / next step:
+    Rebase the topic branch. Restore remains pending until the refreshed
+    SD card is reinserted and its STORAGE partition can be mounted.
+
+
+2026-08-02 - Rebase onto ROCKNIX next
+------------------------------------
+Hypothesis:
+    The 42 RPPocket commits can be replayed over current upstream next
+    without changing their board behavior.
+
+Change:
+    Fetched upstream next at:
+
+        cf5767ee0ae6ce7b9c1850ce3ecc7dad1888644b
+        Merge pull request #3101 from r3claimer/next
+
+    Created the local safety branch:
+
+        retropixel-pocket-support-pre-upstream-20260802
+
+    Rebased retropixel-pocket-support onto that upstream commit. One
+    generated emulator-documentation conflict was resolved by retaining
+    the expanded upstream row; the obsolete topic-side generated delta
+    was intentionally dropped. Range-diff confirmed the remaining topic
+    commits mapped onto the rebased series.
+
+Observed result:
+    Rebase completed with the topic branch still containing the full
+    RPPocket support series.
+
+Decision / next step:
+    Build before requesting a flash.
+
+
+2026-08-02 - Resolve integration build failures
+------------------------------------------------
+Hypothesis:
+    Failures introduced by independently changed upstream and topic
+    code should be resolved at their ownership boundary, without
+    altering verified RPPocket hardware behavior.
+
+Changes:
+    1. Kernel USB2 PHY callback collision:
+
+       The RPPocket vendor patch and new upstream PX30S backport both
+       defined rk3328_usb2phy_tuning() and assigned it to the same PHY
+       configuration. Added:
+
+           projects/ROCKNIX/devices/RK3326/patches/linux/
+           034-rppocket-compose-rk3328-usb2phy-tuning.patch
+
+       It renames the earlier callback to
+       rk3328_usb2phy_vendor_tuning(), invokes it from the new composite
+       callback, and leaves one callback assignment. This preserves the
+       known RPPocket GRF writes before applying PX30S-only tuning.
+
+    2. RenderDoc dependency declaration:
+
+       RenderDoc 1.44 now checks for xcb-keysyms, but its package did
+       not depend on xcb-util-keysyms. Added that package dependency.
+
+    3. Stale local LTO cache:
+
+       VLC found a libx264.a built with the pre-refresh GCC 14 LTO
+       format while the refreshed toolchain expected GCC 15. Cleaned
+       only x264 and VLC through the package-clean targets, then resumed
+       the cached full build. No source workaround was required.
+
+Observed result:
+    Kernel, RenderDoc, x264, VLC, Rust, emulators, and final image
+    generation all completed successfully.
+
+
+2026-08-02 - Build and static verification
+------------------------------------------
+Build:
+    make docker-RK3326
+
+Artifacts:
+    target/ROCKNIX-RK3326.aarch64-20260802-a.img.gz
+        29aa4aa3c9d4dc99016c539ce1183e4b44fd9c06a887bb7d84310448a154b361
+
+    target/ROCKNIX-RK3326.aarch64-20260802-b.img.gz
+        e6ecf305ec3be3eff48d4397bc7d48ccd1ad65cc0a5662535791177b7d2bc186
+
+Verification:
+    Both compressed images passed gzip integrity checks.
+
+    Decompiled the built rk3326-funnyplaying-rppocket.dtb and confirmed:
+
+        - funnyplaying,rppocket compatible and model
+        - RK817 rockchip,system-power-controller and wakeup-source
+        - default, sleep, power-off, and reset PMIC pinctrl states
+        - regulator-state-mem policy
+        - GPIO0_PA1 wifi-vcc-en output-high hog
+
+    Inspected the applied kernel source and confirmed:
+
+        - one rk3328_usb2phy_tuning() composite callback
+        - one rk3328_usb2phy_vendor_tuning() callback
+        - vendor tuning is called before PX30S tuning
+        - one rk3328 PHY callback assignment
+
+
+2026-08-02 - Manual baseline test
+---------------------------------
+Requested test:
+    Do not use SDWire. Flash manually with the debug hook's late DWC2
+    rebind experiment disabled:
+
+        sudo ./debug/pre.sh --flash --no-dwc2-rebind /dev/sdb
+
+    Boot the RPPocket and confirm that the refreshed upstream baseline
+    remains usable before starting power-slider changes.
+
+Observed result:
+    User reported that the refreshed image worked and explicitly
+    approved updating documentation, committing, and pushing the
+    changes.
+
+Decision / next step:
+    Accept the 20260802 image as the new upstream baseline. Keep the
+    pre-refresh safety branch during initial soak testing. Restore the
+    local PICO-8 archive when the SD card is available, then investigate
+    the power slider using debug/022-power-slider-plan.txt.
+
+
+Closure
+-------
+Status:
+    Closed successfully on 2026-08-02.
+
+Outcome:
+    The complete RPPocket series is rebased onto current upstream next,
+    builds with the refreshed toolchain, preserves both USB PHY tuning
+    paths, and passes the user's manual baseline test.

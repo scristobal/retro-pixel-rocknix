@@ -1,0 +1,184 @@
+022 - POWER SLIDER INVESTIGATION PLAN
+==============================================================
+
+Goal
+----
+Make the RPPocket power slider behave consistently across the complete
+power lifecycle:
+
+    - short slide/release while running: suspend
+    - slider action while suspended: wake and resume
+    - approximately 5 second hold while running: orderly poweroff
+    - slider action while powered off: cold boot
+    - PMIC emergency cutoff remains available for a wedged system
+
+Do not implement all of these paths at once. Separate input semantics,
+Linux suspend/wake, userspace policy, orderly shutdown, and PMIC hard
+cutoff so each hardware result identifies one failing layer.
+
+
+Known baseline
+--------------
+Hardware and kernel:
+
+    - The slider is exposed as "rk805 pwrkey" even though the board PMIC
+      is RK817; the shared driver reports KEY_POWER press/release IRQs.
+    - CONFIG_INPUT_RK805_PWRKEY=y and CONFIG_SUSPEND=y.
+    - The RPPocket RK817 node has wakeup-source and the default, sleep,
+      power-off, and reset pinctrl states.
+    - Suspend regulator states are present in the compiled DTB.
+    - The built Linux 6.12.79 rk805-pwrkey driver calls
+      device_init_wakeup(), but does not call dev_pm_set_wake_irq() for
+      its falling IRQ.
+    - RK3576 carries a small candidate patch that adds this wake-IRQ
+      binding. It is a reference, not proof that it fixes RPPocket.
+
+Userspace:
+
+    - ROCKNIX sets systemd-logind HandlePowerKey=suspend.
+    - ROCKNIX defaults RK3326 to mem suspend and runs its normal pre/post
+      sleep hooks around suspend.
+    - Long-hold behavior has not been characterized. It may be a second
+      software event, a PMIC timeout, or a hard cutoff independent of
+      Linux.
+
+Accepted baseline:
+
+    - target/ROCKNIX-RK3326.aarch64-20260802-a.img.gz
+    - sha256 29aa4aa3c9d4dc99016c539ce1183e4b44fd9c06a887bb7d84310448a154b361
+    - User confirmed this refreshed image works before power changes.
+
+
+Phase 1 - Characterize current behavior without code changes
+------------------------------------------------------------
+Hypothesis:
+    The kernel already reports usable press/release events and enters
+    suspend; the first unknown is which layer fails during wake or a
+    long hold.
+
+Capture on the accepted baseline:
+
+    - evtest timestamps for a quick slide/release and a 5+ second hold
+    - /proc/bus/input/devices identity for rk805 pwrkey
+    - /proc/interrupts before and after each action
+    - /sys/kernel/debug/wakeup_sources when available
+    - /sys/power/state and /sys/power/mem_sleep
+    - logind effective HandlePowerKey setting
+    - journal and dmesg across suspend/resume or the following boot
+    - whether display, audio, input, Wi-Fi, and timekeeping recover
+
+Test one action per boot where possible:
+
+    1. Quick slide/release while running.
+    2. Slider action after the device visibly suspends.
+    3. Five second hold while running.
+    4. Slider action from orderly powered-off state.
+    5. Emergency hold only after the normal paths are understood.
+
+Decision gate:
+    Do not add a userspace daemon if suspend itself fails or the wake IRQ
+    never reaches Linux. Do not change firmware configuration until the
+    input and wakeup-source evidence is captured.
+
+
+Phase 2 - Fix suspend wake at the narrowest kernel layer
+--------------------------------------------------------
+Hypothesis:
+    RK817 is marked wake-capable, but the pwrkey child driver has not
+    assigned its falling IRQ as the device wake IRQ.
+
+First candidate:
+    Backport the minimal rk805-pwrkey dev_pm_set_wake_irq() change into
+    the RK3326 patch series, including linux/pm_wakeirq.h. Build, inspect
+    the applied source and DTB, then test only suspend entry and slider
+    wake.
+
+Acceptance:
+    At least ten suspend/resume cycles wake from the slider without an
+    unintended reboot. Display, audio, controls, Wi-Fi, and storage
+    recover after every cycle.
+
+Fallback only if the candidate fails:
+    Compare the working stock image's PMIC IRQ and suspend path before
+    expanding the change. Check wake-enable state in the RK808/RK817 MFD
+    IRQ domain, PMIC interrupt masks, GPIO0 PB2 parent IRQ wake state,
+    and BL31 wake reason. Determine whether RPPocket needs a board
+    rockchip-suspend node or firmware SIP configuration; do not copy the
+    GKD Pixel2 values without stock RPPocket evidence.
+
+
+Phase 3 - Confirm short-action userspace policy
+-----------------------------------------------
+Hypothesis:
+    Once wake is reliable, existing logind HandlePowerKey=suspend is
+    sufficient for short slider actions.
+
+Verification:
+    Confirm exactly one suspend request per physical action, no immediate
+    resume loop from the release edge, and no duplicate handling by
+    EmulationStation or another input consumer. Prefer the existing
+    ROCKNIX sleep hooks and quirk framework over a device-only daemon.
+
+Change only if required:
+    Add a FunnyPlaying device quirk for suspend mode or input filtering.
+    Keep the behavior device-scoped and preserve normal KEY_POWER
+    semantics for other RK3326 boards.
+
+
+Phase 4 - Implement orderly long-hold shutdown
+----------------------------------------------
+Hypothesis:
+    A five second held KEY_POWER event can be distinguished in userspace
+    before the PMIC emergency timeout cuts power.
+
+Characterization gate:
+    First measure whether the press remains asserted, whether repeats are
+    emitted, and the exact time until any PMIC hard cutoff. If hardware
+    removes power before five seconds, orderly shutdown at that threshold
+    is not achievable without changing PMIC timeout configuration.
+
+Implementation preference:
+    Extend an existing ROCKNIX power-button handler if one owns long-press
+    policy at that point. Otherwise add a small device-scoped systemd
+    service that reads only the rk805 pwrkey device, starts a monotonic
+    timer on KEY_POWER press, cancels it on release, and calls systemctl
+    poweroff at the chosen threshold. It must not inhibit logind's short
+    action or consume unrelated input devices.
+
+Acceptance:
+    - release before threshold suspends but does not power off
+    - hold through threshold reaches systemd poweroff and syncs storage
+    - no double suspend/poweroff race
+    - charging and non-charging cases behave consistently
+    - the PMIC emergency cutoff still works when userspace is wedged
+
+
+Phase 5 - Poweroff and cold-boot validation
+-------------------------------------------
+Verify after an orderly shutdown:
+
+    - PMIC power-off pinctrl is selected
+    - rails and display actually turn off rather than entering suspend
+    - no filesystem errors appear on the next boot
+    - slider cold-boots reliably with and without USB power attached
+    - repeated poweroff/powerup cycles do not become a reboot loop
+
+Cold boot is primarily PMIC and bootloader behavior. Do not add Linux
+userspace workarounds unless evidence shows Linux left the PMIC in the
+wrong power-off state.
+
+
+Test and documentation discipline
+---------------------------------
+For each hardware image record:
+
+    - hypothesis
+    - exact patch or configuration change
+    - image name and SHA-256
+    - exact action requested
+    - observed input events, wake source, journal, and visible result
+    - decision and next single change
+
+Always build and decompile the RPPocket DTB before requesting a flash.
+Use manual debug/pre.sh flashing; do not use SDWire. Preserve unrelated
+working input, display, audio, Wi-Fi, and PICO-8 behavior throughout.

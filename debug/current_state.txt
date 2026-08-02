@@ -1,9 +1,9 @@
 CURRENT STATE
 ==============================================================
-As of: 2026-05-01
-Build: target/ROCKNIX-RK3326.aarch64-20260501-a.img.gz
+As of: 2026-08-02
+Build: target/ROCKNIX-RK3326.aarch64-20260802-a.img.gz
 Branch: retropixel-pocket-support
-HEAD : debug: document agent workflow and current branch state
+HEAD : rppocket: refresh upstream baseline
 
 Git branch layout
 -----------------
@@ -16,13 +16,17 @@ Git branch layout
 
            upstream = git@github.com:ROCKNIX/distribution.git
 
-[OK]   Local 'next', origin/next and upstream/next are aligned at:
+[OK]   The topic branch was rebased onto upstream next at:
 
-           7f8c8f83ea  Merge pull request #2596 from ROCKNIX/auto-pr-branch
+           cf5767ee0a  Merge pull request #3101 from r3claimer/next
 
-[NOTE] The topic branch history was rewritten so commit messages carry
-       the detailed per-change debug log.  Force-push
-       retropixel-pocket-support when ready to update the fork.
+       A local safety branch preserves the pre-refresh history:
+
+           retropixel-pocket-support-pre-upstream-20260802
+
+[NOTE] Publish rebased topic history with --force-with-lease, never a
+       plain force push.  Keep the safety branch until the refreshed
+       hardware baseline has had sufficient soak testing.
 
 Agent workflow
 --------------
@@ -49,6 +53,9 @@ Agent workflow
        the SD and inspect the full boot/storage logs directly before
        the next hardware-facing edit.
 
+[RULE] Do not use SDWire3 for this project.  It is unreliable.  Use the
+       manual debug/pre.sh flash, device test, and SD reinsertion flow.
+
 [OK]   debug/pre.sh creates /storage/.cache/debug.rocknix and
        /storage/.cache/log/journal.  Confirmed from mounted storage
        that persistent logs are available without a 'debugging'
@@ -68,6 +75,18 @@ Agent workflow
 
 Stuff that works
 ----------------
+[OK]   The complete RPPocket topic series is rebased onto upstream next
+       cf5767ee0a.  The refreshed 20260802 image built successfully and
+       passed the user's manual flash/boot test.  The A image is:
+           target/ROCKNIX-RK3326.aarch64-20260802-a.img.gz
+           sha256 29aa4aa3c9d4dc99016c539ce1183e4b44fd9c06a887bb7d84310448a154b361
+       Build and compatibility details are recorded in
+       debug/021-upstream-refresh-decision-log.txt.
+[OK]   The refreshed kernel preserves both RPPocket vendor USB2 PHY GRF
+       tuning and the newer upstream PX30S tuning in one callback.  The
+       compiled RPPocket DTB still contains the RK817 PMIC wake/power
+       pinctrl states, suspend regulator policy, Wi-Fi rail GPIO hog,
+       and FunnyPlaying board compatible.
 [OK]   Two-stage u-boot reliably picks the rk3326-funnyplaying-
        rppocket.dtb based on SARADC channel-0 fingerprint.
 [OK]   Mainline kernel 6.12.79 boots all the way to graphical.target
@@ -129,6 +148,15 @@ Stuff that works
 
 Stuff that's broken or unfinished
 ---------------------------------
+[TODO] The pre-refresh PICO-8 state/save tree was backed up locally to:
+           debug/backups/rppocket-pico8-20260802-before-upstream.tar.gz
+       sha256 cd9efd0d413aafced0120edc0ff589129bdd2116796d21eb879c7d965915de72
+       The archive passed gzip, manifest, and key-file verification.
+       It is intentionally untracked.  Restore is still pending in this
+       workflow because no SD media was present after the successful
+       baseline test; do not claim it was restored without checking the
+       mounted STORAGE partition.
+
 [BUG]  Brightness rocker has no visible action.  The latest known
        working image maps the observed PA0/PA1/PB2 contact group to
        BRIGHTNESS-UP / BRIGHTNESS-DOWN / BRIGHTNESS-CLICK, but the
@@ -142,11 +170,15 @@ Stuff that's broken or unfinished
        BTN_TRIGGER_HAPPY1 but has no visible action.  This is expected
        for now because ROCKNIX does not bind it to a user action.
 
-[TODO] Power slider.  The hardware-side slider is wired through
-       rk805_pwrkey (verified via /proc/bus/input/devices); a long
-       slide presumably triggers PMIC poweroff.  Behaviour beyond
-       'pwrkey' has not been verified, and there is no investigation
-       yet of whether ROCKNIX's expected suspend/resume hooks fire.
+[TODO] Power slider.  The hardware-side slider is wired through the
+       RK817 PMIC and exposed by the rk805-pwrkey input driver.  ROCKNIX
+       configures systemd-logind HandlePowerKey=suspend, but the built
+       6.12 driver does not call dev_pm_set_wake_irq() for the falling
+       power-key IRQ.  Baseline event timing, suspend entry, wake, long
+       hold shutdown, and cold power-up still need hardware
+       characterization.  Follow the staged plan in
+       debug/022-power-slider-plan.txt and preserve the PMIC emergency
+       cutoff path.
 
 [TODO] Battery LED.  The 001-device_config quirk sets
        DEVICE_BATTERY_LED_STATUS="false" because the LED behaviour
@@ -174,14 +206,17 @@ Open questions
 
 How to resume work
 ------------------
-1.  Continue Wi-Fi from debug/016-wifi-from-scratch.txt.  Start from
-    the verified clean RPPocket DTB baseline only if regression testing
-    finds a new issue.  The successful close-out is documented in
-    debug/020-wifi-stock-source-instrumentation.txt.
-2.  If brightness is revisited, decide whether to add a ROCKNIX
+1.  Restore the verified local PICO-8 archive after the user reinserts
+    the refreshed SD card.  Mount STORAGE read/write, restore the full
+    games-internal/roms/pico-8 tree with numeric ownership, verify key
+    files, sync, and unmount.
+2.  Start power-slider characterization from
+    debug/022-power-slider-plan.txt.  Do not combine wake-IRQ, suspend
+    firmware, and userspace timing changes in one hardware image.
+3.  If brightness is revisited, decide whether to add a ROCKNIX
     userspace binding for PA0/PA1/PB2 or keep the vendor-style
     Fn + volume model and investigate why gpio2 PA4 has not fired.
-3.  Keep commits on retropixel-pocket-support.  Rebase or merge over
+4.  Keep commits on retropixel-pocket-support.  Rebase or merge over
     upstream/next when needed, then push the topic branch to origin
     and clean up the commit log if helpful for a future upstream PR.
 

@@ -1,0 +1,48 @@
+From: RetroPixel Pocket bring-up
+Subject: [PATCH] phy: rockchip-inno-usb2: compose rk3328 tuning callbacks
+
+The RPPocket vendor tuning patch and the PX30S tuning backport both add an
+rk3328_usb2phy_tuning() callback and assign it to rk3328_phy_cfgs.  Preserve
+the vendor GRF writes used during RPPocket Wi-Fi bring-up, then apply the
+additional PX30S tuning when the SoC detector selects it.
+
+Keep one callback assignment so the two independently added implementations
+do not collide after the upstream RK3326 patch series is applied.
+
+---
+ drivers/phy/rockchip/phy-rockchip-inno-usb2.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+--- a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
++++ b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+@@ -1563,7 +1563,7 @@ static int rk3128_usb2phy_tuning(struct rockchip_usb2phy *rphy)
+ 				BIT(2) << BIT_WRITEABLE_SHIFT | 0);
+ }
+ 
+-static int rk3328_usb2phy_tuning(struct rockchip_usb2phy *rphy)
++static int rk3328_usb2phy_vendor_tuning(struct rockchip_usb2phy *rphy)
+ {
+ 	int ret;
+ 
+@@ -1810,6 +1810,10 @@ static int rk3328_usb2phy_tuning(struct rockchip_usb2phy *rphy)
+ {
+ 	int ret;
+ 
++	ret = rk3328_usb2phy_vendor_tuning(rphy);
++	if (ret)
++		return ret;
++
+ 	if (!soc_is_px30s())
+ 		return 0;
+ 
+@@ -1859,7 +1863,6 @@ static const struct rockchip_usb2phy_cfg rk3328_phy_cfgs[] = {
+ 	{
+ 		.reg = 0x100,
+ 		.num_ports	= 2,
+-		.phy_tuning	= rk3328_usb2phy_tuning,
+ 		.clkout_ctl	= { 0x108, 4, 4, 1, 0 },
+ 		.port_cfgs	= {
+ 			[USB2PHY_PORT_OTG] = {
+-- 
+2.43.0
