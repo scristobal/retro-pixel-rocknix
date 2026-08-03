@@ -42,9 +42,11 @@
 #   sudo ./pre.sh --power-slider-reliability-test
 #                                     remove active diagnostics and passively
 #                                     capture ten normal suspend/resume cycles
+#   sudo ./pre.sh --release           prepare a production card with no extra
+#                                     diagnostics, persistent debug journal,
+#                                     experiment markers, or test services
 #   sudo ./pre.sh --power-slider-cleanup
-#                                     remove the passive collector after the
-#                                     validated production reliability run
+#                                     legacy alias for --release
 #
 # After device testing, insert the SD into the host and tell the agent.
 # The agent mounts the SD and reads the full boot/storage logs directly.
@@ -65,7 +67,7 @@ PM_DEEP=0
 POWER_SLIDER_TEST=0
 POWER_SLIDER_LONG_TEST=0
 POWER_SLIDER_RELIABILITY_TEST=0
-POWER_SLIDER_CLEANUP=0
+RELEASE=0
 DEV=/dev/sdb
 for arg in "$@"; do
 	case "$arg" in
@@ -83,14 +85,18 @@ for arg in "$@"; do
 		--power-slider-test) POWER_SLIDER_TEST=1 ;;
 		--power-slider-long-test) POWER_SLIDER_LONG_TEST=1 ;;
 		--power-slider-reliability-test) POWER_SLIDER_RELIABILITY_TEST=1 ;;
-		--power-slider-cleanup) POWER_SLIDER_CLEANUP=1 ;;
+		--release|--power-slider-cleanup) RELEASE=1 ;;
 		/dev/*)  DEV="$arg" ;;
 		*) echo "Unknown arg: $arg" >&2; exit 1 ;;
 	esac
 done
 
-if (( PM_TEST_DEVICES + PM_TEST_DEVICES_NO_GPU + PM_FREEZE_NO_GPU + PM_FREEZE + PM_DEEP + POWER_SLIDER_TEST + POWER_SLIDER_LONG_TEST + POWER_SLIDER_RELIABILITY_TEST + POWER_SLIDER_CLEANUP > 1 )); then
-	echo "Choose only one PM diagnostic mode." >&2
+if (( PM_TEST_DEVICES + PM_TEST_DEVICES_NO_GPU + PM_FREEZE_NO_GPU + PM_FREEZE + PM_DEEP + POWER_SLIDER_TEST + POWER_SLIDER_LONG_TEST + POWER_SLIDER_RELIABILITY_TEST + RELEASE > 1 )); then
+	echo "Choose only one PM diagnostic/release mode." >&2
+	exit 1
+fi
+if (( RELEASE && (! DWC2_REBIND || WIFI_RAIL_SCAN || RK817_GPIO_SCAN || AMUX_GPIO_SCAN || STOCK_INIT_GPIO1) )); then
+	echo "--release cannot be combined with diagnostic experiment options." >&2
 	exit 1
 fi
 
@@ -1841,18 +1847,23 @@ else
 		"$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-power-slider-reliability-test.service"
 fi
 
-if (( POWER_SLIDER_CLEANUP )); then
+if (( RELEASE )); then
 	rm -f "$STORE_MNT/.config/autostart/000-rppocket-debug.sh" \
 		"$STORE_MNT/.config/rppocket-no-dwc2-rebind" \
+		"$STORE_MNT/.config/rppocket-stock-init-gpio1" \
 		"$STORE_MNT/.config/rppocket-pm-test-install.manifest" \
 		"$STORE_MNT/.config/rppocket-power-slider-reliability-test.sh" \
 		"$STORE_MNT/.config/rppocket-power-slider-reliability-test.once" \
 		"$STORE_MNT/.config/system.d/rppocket-power-slider-reliability-test.service" \
 		"$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-power-slider-reliability-test.service" \
 		"$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-power-slider-reliability-test.service" \
+		"$STORE_MNT/.cache/debug.rocknix" \
+		"$STORE_MNT/.cache/journald.conf.d/persist.conf" \
 		"$STORE_MNT/.cache/log/rppocket-power-slider-reliability-test.log" \
 		"$STORE_MNT/.cache/log/rppocket-power-slider-reliability-orderly-shutdown.log" \
 		"$STORE_MNT/.cache/log/rppocket-power-slider-reliability-v1-journal.log"
+	rm -rf "$STORE_MNT/.cache/log/journal"
+	rmdir "$STORE_MNT/.cache/journald.conf.d" 2>/dev/null || true
 fi
 
 if (( WIFI_RAIL_SCAN )); then
@@ -2378,15 +2389,19 @@ elif (( POWER_SLIDER_RELIABILITY_TEST )); then
 		date -u +prepared_utc=%Y-%m-%dT%H:%M:%SZ
 	} > "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
 	echo ">>> VERIFIED: passive reliability collector is sole service; broad debug is absent."
-elif (( POWER_SLIDER_CLEANUP )); then
+elif (( RELEASE )); then
 	test ! -e "$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
 	test ! -e "$STORE_MNT/.config/rppocket-no-dwc2-rebind"
+	test ! -e "$STORE_MNT/.config/rppocket-stock-init-gpio1"
 	test ! -e "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
 	test ! -e "$STORE_MNT/.config/rppocket-power-slider-reliability-test.sh"
 	test ! -e "$STORE_MNT/.config/rppocket-power-slider-reliability-test.once"
 	test ! -e "$STORE_MNT/.config/system.d/rppocket-power-slider-reliability-test.service"
 	test ! -e "$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-power-slider-reliability-test.service"
 	test ! -e "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-power-slider-reliability-test.service"
+	test ! -e "$STORE_MNT/.cache/debug.rocknix"
+	test ! -e "$STORE_MNT/.cache/journald.conf.d/persist.conf"
+	test ! -e "$STORE_MNT/.cache/log/journal"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-reliability-test.log"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-reliability-orderly-shutdown.log"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-reliability-v1-journal.log"
@@ -2395,7 +2410,7 @@ elif (( POWER_SLIDER_CLEANUP )); then
 		echo "ERROR: an RPPocket test service link remains" >&2
 		exit 1
 	fi
-	echo ">>> VERIFIED: storage-side power-slider diagnostics are removed."
+	echo ">>> VERIFIED: release card has no extra diagnostics or test services."
 fi
 sync
 
@@ -2422,9 +2437,11 @@ rm -rf "$BOOT_MNT/pstore"
 sync
 umount "$BOOT_MNT"
 
-if (( PM_TEST_DEVICES || PM_TEST_DEVICES_NO_GPU || PM_FREEZE_NO_GPU || PM_FREEZE || PM_DEEP || POWER_SLIDER_TEST || POWER_SLIDER_LONG_TEST || POWER_SLIDER_RELIABILITY_TEST || POWER_SLIDER_CLEANUP )); then
+if (( PM_TEST_DEVICES || PM_TEST_DEVICES_NO_GPU || PM_FREEZE_NO_GPU || PM_FREEZE || PM_DEEP || POWER_SLIDER_TEST || POWER_SLIDER_LONG_TEST || POWER_SLIDER_RELIABILITY_TEST )); then
 	echo ">>> PREPARED, NOT CLEARED TO BOOT: leave the card in this PC."
 	echo ">>> Tell the agent 'prepared' so the image and harness can be verified read-only."
+elif (( RELEASE )); then
+	echo ">>> Release preparation complete. The card is ready for normal use."
 else
 	echo ">>> OK. Insert SD into RPPocket and power on."
 fi
@@ -2466,16 +2483,18 @@ elif (( POWER_SLIDER_LONG_TEST )); then
 elif (( POWER_SLIDER_RELIABILITY_TEST )); then
 	echo ">>> Wait 90 sec for normal startup, then perform ten requested short cycles."
 	echo ">>> Only the passive shutdown journal collector remains active."
-elif (( POWER_SLIDER_CLEANUP )); then
-	echo ">>> Production storage is clean; no further hardware test is required."
+elif (( RELEASE )); then
+	:
 else
 	echo ">>> Wait ~3 min (or until the blinking LED stops changing cadence),"
 	echo ">>> power off with a long press, pull the SD, and tell the agent it is inserted."
 fi
-if (( DWC2_REBIND )); then
-	echo ">>> Late hook will run the DWC2 unbind/rebind experiment."
-else
-	echo ">>> Late hook will skip the DWC2 unbind/rebind experiment."
+if (( ! RELEASE )); then
+	if (( DWC2_REBIND )); then
+		echo ">>> Late hook will run the DWC2 unbind/rebind experiment."
+	else
+		echo ">>> Late hook will skip the DWC2 unbind/rebind experiment."
+	fi
 fi
 echo
 if (( FLASH )); then

@@ -1,0 +1,53 @@
+RPPocket release-card preparation
+=================================
+
+Purpose
+-------
+`debug/pre.sh` is primarily a bring-up tool. Its default mode intentionally
+installs persistent journald storage and a broad boot-time diagnostic hook.
+Those are useful during hardware investigation but should not be left on a
+normal production card.
+
+Use the generic release mode for the final card:
+
+    sudo debug/pre.sh --flash --release /dev/sdX
+
+To clean an already-flashed card without rewriting the image:
+
+    sudo debug/pre.sh --release /dev/sdX
+
+`--power-slider-cleanup` remains as a compatibility alias for `--release`; new
+instructions should use the generic name.
+
+Release contract
+----------------
+Release mode keeps normal user content installed by pre.sh, including controller
+configuration, ROMs, and licensed PICO-8 files when present. It removes only the
+extra bring-up state:
+
+* the broad RPPocket debug autostart hook;
+* DWC2 and stock-init experiment markers;
+* PM and power-slider test manifests, markers, services, and active links;
+* the debug.rocknix marker;
+* the pre.sh persistent-journald override and captured journal directory;
+* generated boot-partition dmesg, journal, pstore, event, and error captures.
+
+The mode verifies the resulting absence of diagnostics before unmounting the
+card. It is intentionally incompatible with GPIO scans, stock-init emulation,
+`--no-dwc2-rebind`, and all PM/power-slider diagnostic modes. `--flash` and a
+block-device argument are the only optional companions expected for release
+use.
+
+This flag is not a runtime requirement and does not alter suspend behavior. It
+only controls what the repository's development helper leaves on writable
+storage after flashing. A card written with another image writer has no pre.sh
+diagnostics to clean.
+
+Validation
+----------
+The release cleanup block was mock-tested with populated diagnostic markers,
+services, links, persistent journal state, and an unrelated user file. All
+listed diagnostics were removed and the unrelated file remained. Bash syntax
+checking passed. Argument tests confirmed that `--release` and its legacy alias
+parse successfully, while combinations with PM or GPIO/DWC2 experiment options
+are rejected before any block device is touched.
