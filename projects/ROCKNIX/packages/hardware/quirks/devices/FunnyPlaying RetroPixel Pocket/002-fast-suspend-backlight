@@ -1,22 +1,28 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
-# Blank the RPPocket backlight as soon as systemd accepts a suspend request.
-# The normal sleep hooks need a few seconds to quiesce Wi-Fi and USB before the
-# kernel can enter deep sleep, so waiting for the panel's PM callback makes a
-# short press feel unnecessarily slow.
+# Blank the RPPocket backlight and mute playback as soon as systemd accepts a
+# suspend request. The normal sleep hooks need a few seconds to quiesce Wi-Fi
+# and USB before the kernel can enter deep sleep, so waiting for the panel and
+# codec PM callbacks makes a short press feel unnecessarily slow.
 
 cat >/run/rppocket-fast-suspend-backlight <<'EOF'
 #!/bin/sh
 
 brightness_path=
 saved_brightness=
+saved_playback=
+mixer_control='Master Playback Volume'
 
-restore_backlight() {
+restore_outputs() {
 	if [ -n "$brightness_path" ] && [ -n "$saved_brightness" ]; then
 		printf '%s\n' "$saved_brightness" >"$brightness_path" 2>/dev/null || true
 	fi
+	if [ -n "$saved_playback" ]; then
+		amixer -c 0 -q cset "name=$mixer_control" "$saved_playback" \
+			>/dev/null 2>&1 || true
+	fi
 }
-trap restore_backlight EXIT HUP INT TERM
+trap restore_outputs EXIT HUP INT TERM
 
 for path in /sys/class/backlight/*/brightness; do
 	if [ -r "$path" ] && [ -w "$path" ]; then
@@ -35,8 +41,25 @@ saved_brightness="$(cat "$brightness_path")"
 suspend_success="$(cat "$stats")"
 printf '0\n' >"$brightness_path" || exit 1
 
+# Preserve the exact raw stereo playback level, then attenuate both channels to
+# the codec minimum. This affects speakers and headphones without changing the
+# user's PipeWire volume. Failure is non-fatal so suspend remains available.
+saved_playback="$(
+	amixer -c 0 cget "name=$mixer_control" 2>/dev/null |
+		sed -n 's/^[[:space:]]*: values=//p' | head -n 1
+)"
+case "$saved_playback" in
+	''|*[!0-9,]*) saved_playback= ;;
+	*)
+		mute_playback="$(printf '%s\n' "$saved_playback" |
+			sed 's/[0-9][0-9]*/0/g')"
+		amixer -c 0 -q cset "name=$mixer_control" "$mute_playback" \
+			>/dev/null 2>&1 || true
+		;;
+esac
+
 # Type=notify keeps sleep.target behind this point, guaranteeing that the
-# screen is already dark before the regular serial preparation starts.
+# screen is dark and playback is muted before serial preparation starts.
 systemd-notify --ready || exit 1
 
 # This process is frozen with userspace. On resume the kernel increments the
@@ -58,7 +81,7 @@ chmod +x /run/rppocket-fast-suspend-backlight
 mkdir -p /run/systemd/system/sleep.target.wants
 cat >/run/systemd/system/rppocket-fast-suspend-backlight.service <<'EOF'
 [Unit]
-Description=Blank RPPocket backlight before suspend preparation
+Description=Blank RPPocket backlight and mute audio before suspend preparation
 Before=sleep.target
 
 [Service]
