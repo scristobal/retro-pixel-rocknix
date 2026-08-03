@@ -1,7 +1,7 @@
 #!/bin/bash
 # Prep a ROCKNIX SD card for a headless RPPocket boot attempt.
 #
-# By default (--no-flash) pre.sh only installs debug hooks on an
+# By default (without --flash) pre.sh only installs debug hooks on an
 # already-flashed card:
 #   - persistent systemd-journald config
 #   - /storage/.config/autostart/* script that dumps dmesg, journalctl,
@@ -18,22 +18,10 @@
 #   sudo ./pre.sh                    just (re-)install debug hooks
 #   sudo ./pre.sh --flash            flash newest image + hooks
 #   sudo ./pre.sh --flash /dev/sdX   pick a non-default SD device
+#   sudo ./pre.sh --flash --preserve-wifi /dev/sdX
+#                                     securely preserve NetworkManager Wi-Fi
+#                                     profiles across the destructive flash
 #   sudo ./pre.sh /dev/sdX
-#   sudo ./pre.sh --no-dwc2-rebind   install hooks but skip the late DWC2
-#                                     unbind/rebind experiment
-#   sudo ./pre.sh --amux-gpio-scan    install a GPIO3 PB0/PB3/PB5 scan hook
-#   sudo ./pre.sh --stock-init-gpio1  reproduce stock init's GPIO1 high /
-#                                     GPIO114 low state before logging
-#   sudo ./pre.sh --pm-test-devices   install a one-shot suspend device-phase
-#                                     test; may be combined with --flash
-#   sudo ./pre.sh --pm-test-devices-no-gpu
-#                                     run the test from systemd for an image
-#                                     whose GPU node is disabled
-#   sudo ./pre.sh --pm-freeze-no-gpu   enter real freeze on a GPU-disabled image
-#   sudo ./pre.sh --pm-freeze          enter real freeze with the GPU restored
-#                                     and wait for one power-slider wake action
-#   sudo ./pre.sh --pm-deep            enter deep suspend-to-RAM with the stock
-#                                     BL31 policy and wait for one slider wake
 #   sudo ./pre.sh --power-slider-test  install a startup handshake for normal
 #                                     logind short-action testing
 #   sudo ./pre.sh --power-slider-long-test
@@ -54,52 +42,33 @@
 set -euo pipefail
 
 FLASH=0
-DWC2_REBIND=1
-WIFI_RAIL_SCAN=0
-RK817_GPIO_SCAN=0
-AMUX_GPIO_SCAN=0
-STOCK_INIT_GPIO1=0
-PM_TEST_DEVICES=0
-PM_TEST_DEVICES_NO_GPU=0
-PM_FREEZE_NO_GPU=0
-PM_FREEZE=0
-PM_DEEP=0
 POWER_SLIDER_TEST=0
 POWER_SLIDER_LONG_TEST=0
 POWER_SLIDER_RELIABILITY_TEST=0
 RELEASE=0
+PRESERVE_WIFI=0
 DEV=/dev/sdb
 for arg in "$@"; do
 	case "$arg" in
 		--flash) FLASH=1 ;;
-		--no-dwc2-rebind) DWC2_REBIND=0 ;;
-		--wifi-rail-scan) WIFI_RAIL_SCAN=1 ;;
-		--rk817-gpio-scan) RK817_GPIO_SCAN=1 ;;
-		--amux-gpio-scan) AMUX_GPIO_SCAN=1 ;;
-		--stock-init-gpio1) STOCK_INIT_GPIO1=1 ;;
-		--pm-test-devices) PM_TEST_DEVICES=1 ;;
-		--pm-test-devices-no-gpu) PM_TEST_DEVICES_NO_GPU=1 ;;
-		--pm-freeze-no-gpu) PM_FREEZE_NO_GPU=1 ;;
-		--pm-freeze) PM_FREEZE=1 ;;
-		--pm-deep) PM_DEEP=1 ;;
 		--power-slider-test) POWER_SLIDER_TEST=1 ;;
 		--power-slider-long-test) POWER_SLIDER_LONG_TEST=1 ;;
 		--power-slider-reliability-test) POWER_SLIDER_RELIABILITY_TEST=1 ;;
 		--release|--power-slider-cleanup) RELEASE=1 ;;
+		--preserve-wifi) PRESERVE_WIFI=1 ;;
 		/dev/*)  DEV="$arg" ;;
 		*) echo "Unknown arg: $arg" >&2; exit 1 ;;
 	esac
 done
 
-if (( PM_TEST_DEVICES + PM_TEST_DEVICES_NO_GPU + PM_FREEZE_NO_GPU + PM_FREEZE + PM_DEEP + POWER_SLIDER_TEST + POWER_SLIDER_LONG_TEST + POWER_SLIDER_RELIABILITY_TEST + RELEASE > 1 )); then
-	echo "Choose only one PM diagnostic/release mode." >&2
+if (( POWER_SLIDER_TEST + POWER_SLIDER_LONG_TEST + POWER_SLIDER_RELIABILITY_TEST + RELEASE > 1 )); then
+	echo "Choose only one power-slider diagnostic/release mode." >&2
 	exit 1
 fi
-if (( RELEASE && (! DWC2_REBIND || WIFI_RAIL_SCAN || RK817_GPIO_SCAN || AMUX_GPIO_SCAN || STOCK_INIT_GPIO1) )); then
-	echo "--release cannot be combined with diagnostic experiment options." >&2
+if (( PRESERVE_WIFI && ! FLASH )); then
+	echo "--preserve-wifi requires --flash." >&2
 	exit 1
 fi
-
 BOOT_MNT=/mnt/rockboot
 STORE_MNT=/mnt/rockstore
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -136,12 +105,45 @@ else
 	sleep 3
 fi
 
-cleanup() { umount "$STORE_MNT" 2>/dev/null || true; umount "$BOOT_MNT" 2>/dev/null || true; }
+WIFI_BACKUP_DIR=""
+WIFI_PROFILE_COUNT=0
+cleanup() {
+	umount "$STORE_MNT" 2>/dev/null || true
+	umount "$BOOT_MNT" 2>/dev/null || true
+	if [[ -n "$WIFI_BACKUP_DIR" ]]; then
+		rm -rf -- "$WIFI_BACKUP_DIR"
+	fi
+}
 trap cleanup EXIT
 
 mkdir -p "$BOOT_MNT" "$STORE_MNT"
 umount "${DEV}1" 2>/dev/null || true
 umount "${DEV}2" 2>/dev/null || true
+
+if (( PRESERVE_WIFI )); then
+	# Keep credentials off persistent host storage. The root-only tmpfs backup
+	# is removed by the EXIT trap on success, failure, or interruption.
+	WIFI_BACKUP_DIR=$(mktemp -d /dev/shm/rppocket-wifi.XXXXXX)
+	chmod 0700 "$WIFI_BACKUP_DIR"
+	echo ">>> Preserving existing Wi-Fi profiles in protected temporary memory..."
+	if ! mount -o ro,noload "${DEV}2" "$STORE_MNT"; then
+		echo "ERROR: cannot mount the existing STORAGE partition to preserve Wi-Fi." >&2
+		exit 1
+	fi
+	WIFI_SOURCE="$STORE_MNT/.config/NetworkManager/system-connections"
+	if [[ -d "$WIFI_SOURCE" ]]; then
+		while IFS= read -r -d '' profile; do
+			install -m 0600 -- "$profile" "$WIFI_BACKUP_DIR/${profile##*/}"
+			((WIFI_PROFILE_COUNT += 1))
+		done < <(find "$WIFI_SOURCE" -maxdepth 1 -type f -print0)
+	fi
+	umount "$STORE_MNT"
+	if (( WIFI_PROFILE_COUNT )); then
+		echo ">>> Preserved $WIFI_PROFILE_COUNT Wi-Fi profile(s)."
+	else
+		echo ">>> No existing Wi-Fi profiles were found; continuing with the flash."
+	fi
+fi
 
 if (( FLASH )); then
 	echo ">>> Writing image (this takes 1-2 min)..."
@@ -182,6 +184,23 @@ fi
 
 # --- storage partition: drop hooks ------------------------------------------
 mount "${DEV}2" "$STORE_MNT"
+
+if (( WIFI_PROFILE_COUNT )); then
+	WIFI_DEST="$STORE_MNT/.config/NetworkManager/system-connections"
+	install -d -m 0755 "$WIFI_DEST"
+	WIFI_RESTORED=0
+	while IFS= read -r -d '' profile; do
+		dest="$WIFI_DEST/${profile##*/}"
+		install -m 0600 -- "$profile" "$dest"
+		cmp -s -- "$profile" "$dest"
+		((WIFI_RESTORED += 1))
+	done < <(find "$WIFI_BACKUP_DIR" -maxdepth 1 -type f -print0)
+	if (( WIFI_RESTORED != WIFI_PROFILE_COUNT )); then
+		echo "ERROR: restored $WIFI_RESTORED of $WIFI_PROFILE_COUNT Wi-Fi profiles." >&2
+		exit 1
+	fi
+	echo ">>> Restored $WIFI_RESTORED Wi-Fi profile(s) with mode 0600."
+fi
 
 # Persistent journald is the most reliable capture: journald starts in
 # sysinit.target, long before graphical.target or any autostart, so even
@@ -228,16 +247,8 @@ fi
 # (which needs graphical.target to settle).  Kept as a nice-to-have
 # extra on top of the journal.
 mkdir -p "$STORE_MNT/.config/autostart"
-if (( DWC2_REBIND )); then
-	rm -f "$STORE_MNT/.config/rppocket-no-dwc2-rebind"
-else
-	touch "$STORE_MNT/.config/rppocket-no-dwc2-rebind"
-fi
-if (( STOCK_INIT_GPIO1 )); then
-	touch "$STORE_MNT/.config/rppocket-stock-init-gpio1"
-else
-	rm -f "$STORE_MNT/.config/rppocket-stock-init-gpio1"
-fi
+rm -f "$STORE_MNT/.config/rppocket-no-dwc2-rebind" \
+	"$STORE_MNT/.config/rppocket-stock-init-gpio1"
 
 # 000- prefix so it sorts earliest and runs before anything else user-supplied
 cat > "$STORE_MNT/.config/autostart/000-rppocket-debug.sh" <<'EOF'
@@ -365,7 +376,7 @@ dump_pmic_i2c_state() {
 		echo "i2cdetect unavailable"
 	fi
 
-	echo "--- RK817 candidate dumps at 0x20 ---"
+	echo "--- RK817 register dump at 0x20 ---"
 	if command -v i2cdump >/dev/null 2>&1; then
 		for bus in 0 1 2 3 4 5; do
 			[ -e "/dev/i2c-$bus" ] || continue
@@ -379,44 +390,12 @@ dump_pmic_i2c_state() {
 	fi
 }
 
-apply_stock_init_gpio1() {
-	echo "=== stock init GPIO1 experiment ==="
-	if [ ! -e /storage/.config/rppocket-stock-init-gpio1 ]; then
-		echo "disabled"
-		return
-	fi
-
-	# Stock busybox init exports GPIO1 (GPIO0_PA1) and drives it high.
-	# The broad stock-vs-ROCKNIX diff shows this as a remaining early
-	# GPIO0 delta while the YJ33 Wi-Fi rail is powered on stock.
-	for gpio in 1 114; do
-		if [ ! -d "/sys/class/gpio/gpio${gpio}" ]; then
-			echo "$gpio" > /sys/class/gpio/export 2>/dev/null || true
-			sleep 0.1
-		fi
-		echo 0 > "/sys/class/gpio/gpio${gpio}/active_low" 2>/dev/null || true
-	done
-
-	echo out > /sys/class/gpio/gpio1/direction 2>/dev/null || true
-	echo 1 > /sys/class/gpio/gpio1/value 2>/dev/null || true
-	echo out > /sys/class/gpio/gpio114/direction 2>/dev/null || true
-	echo 0 > /sys/class/gpio/gpio114/value 2>/dev/null || true
-
-	printf 'gpio1  direction=%s value=%s\n' \
-		"$(cat /sys/class/gpio/gpio1/direction 2>/dev/null || echo '?')" \
-		"$(cat /sys/class/gpio/gpio1/value 2>/dev/null || echo '?')"
-	printf 'gpio114 direction=%s value=%s\n' \
-		"$(cat /sys/class/gpio/gpio114/direction 2>/dev/null || echo '?')" \
-		"$(cat /sys/class/gpio/gpio114/value 2>/dev/null || echo '?')"
-}
-
 # /flash is mounted read-only by default on ROCKNIX (see how fs-resize
 # handles its log write).  Remount rw, dump, remount ro.
 mount -o remount,rw "$OUT" 2>/dev/null
 
-# A DPM watchdog panic is written to the temporary RPPocket ramoops region.
-# Preserve it on the FAT partition at the start of the next boot, before any
-# later experiment can replace the persistent ring contents.
+# Preserve any firmware-backed pstore records on the FAT partition before a
+# later boot can replace them.
 mkdir -p /sys/fs/pstore "$OUT/pstore"
 mount -t pstore pstore /sys/fs/pstore 2>/dev/null || true
 rm -f "$OUT/pstore/"*
@@ -439,15 +418,9 @@ done
 	dmesg | grep -iE 'ramoops|pstore' 2>&1 || true
 } > "$OUT/pstore-status.txt" 2>&1
 
-# Keep one-shot PM tests isolated. The broad register/I2C capture is
-# intentionally heavy and can perturb the I2C controller while PM diagnostics
-# are running. Deep and production-policy modes have no GPU-expectation mode
-# file, so recognize their fresh markers explicitly; rocknix-autostart
-# completes before either service runs.
-if [ -e /storage/.config/rppocket-pm-test-devices-mode ] ||
-   [ -e /storage/.config/rppocket-pm-test-devices-no-gpu-mode ] ||
-   [ -e /storage/.config/rppocket-pm-deep.once ] ||
-   [ -e /storage/.config/rppocket-power-slider-test.once ] ||
+# Keep power-slider tests isolated. The broad register/I2C capture is
+# intentionally heavy and must not run during a suspend test.
+if [ -e /storage/.config/rppocket-power-slider-test.once ] ||
    [ -e /storage/.config/rppocket-power-slider-long-test.once ]; then
 	dmesg > "$OUT/dmesg-boot.txt" 2>&1
 	journalctl -b -a --no-pager > "$OUT/journalctl-boot.txt" 2>&1
@@ -458,8 +431,6 @@ if [ -e /storage/.config/rppocket-pm-test-devices-mode ] ||
 fi
 
 {
-	apply_stock_init_gpio1
-
 	echo "=== date ==="
 	date
 
@@ -577,20 +548,13 @@ fi
 	echo "=== /proc/interrupts | gpio-keys ==="
 	grep -E 'gpio_keys|CPU' /proc/interrupts 2>&1
 
-		dump_lowlevel_usb_state "rocknix-early"
-		dump_broad_register_state "rocknix-early"
-		dump_pmic_i2c_state "rocknix-early"
+	dump_lowlevel_usb_state "rocknix-early"
+	dump_broad_register_state "rocknix-early"
+	dump_pmic_i2c_state "rocknix-early"
 } > "$OUT/rppocket-debug.txt" 2>&1
 
-dmesg | grep -iE 'RPPDBG|dwc2|usb2phy|usb |usb[0-9]|0bda|8179|rtl|rtw|8188|wifi|wlan|cfg80211|firmware|phy|vcc|regulator' \
+dmesg | grep -iE 'dwc2|usb2phy|usb |usb[0-9]|0bda|8179|rtl|rtw|8188|wifi|wlan|cfg80211|firmware|phy|vcc|regulator' \
 	> "$OUT/rppocket-usb-boot.txt" 2>&1
-
-# NOTE: the boot-time evtest --grab capture has been removed.  evtest --grab
-# calls EVIOCGRAB which exclusively claims the input device, so for the
-# duration of the capture window EmulationStation can't read any button —
-# every key looks dead until the timer expires.  We already extracted the
-# rocker GPIO map from earlier captures; leaving the grab in place was
-# blocking real-use testing.
 
 dmesg                       > "$OUT/dmesg-boot.txt"      2>&1
 journalctl -b -a --no-pager > "$OUT/journalctl-boot.txt" 2>&1
@@ -666,70 +630,11 @@ sync
 		echo "=== regulator summary ==="
 		cat /sys/kernel/debug/regulator/regulator_summary 2>/dev/null | head -80
 
-			dump_lowlevel_usb_state "rocknix-late-before-rebind"
-			dump_broad_register_state "rocknix-late-before-rebind"
-			dump_pmic_i2c_state "rocknix-late-before-rebind"
+		dump_lowlevel_usb_state "rocknix-late"
+		dump_broad_register_state "rocknix-late"
+		dump_pmic_i2c_state "rocknix-late"
 
-		echo "=== delayed DWC2 rebind experiment ==="
-		echo "time before optional rebind: $(date)"
-		echo "--- USB devices before DWC2 rebind ---"
-		for d in /sys/bus/usb/devices/* ; do
-			[ -d "$d" ] || continue
-			echo "--- $d ---"
-			for f in idVendor idProduct manufacturer product serial busnum devnum speed bDeviceClass bDeviceSubClass bDeviceProtocol driver ; do
-				[ -e "$d/$f" ] || continue
-				printf '%-22s = %s\n' "$f" "$(cat "$d/$f" 2>/dev/null)"
-			done
-			[ -L "$d/driver" ] && echo "driver-link = $(readlink "$d/driver" 2>/dev/null)"
-		done
-		if [ -e /storage/.config/rppocket-no-dwc2-rebind ]; then
-			echo "DWC2 rebind skipped by /storage/.config/rppocket-no-dwc2-rebind"
-		elif [ -e /sys/bus/platform/drivers/dwc2/ff300000.usb ]; then
-			echo "--- no runtime USB2PHY writes before rebind ---"
-			echo "unbind ff300000.usb"
-			echo ff300000.usb > /sys/bus/platform/drivers/dwc2/unbind 2>&1 || true
-			sleep 3
-			echo "bind ff300000.usb"
-			echo ff300000.usb > /sys/bus/platform/drivers/dwc2/bind 2>&1 || true
-			sleep 8
-		else
-			echo "dwc2 platform device ff300000.usb is not currently bound"
-			ls -la /sys/bus/platform/drivers/dwc2 2>&1 || true
-		fi
-		echo "time after optional rebind: $(date)"
-		echo "--- USB devices after DWC2 rebind ---"
-		for d in /sys/bus/usb/devices/* ; do
-			[ -d "$d" ] || continue
-			echo "--- $d ---"
-			for f in idVendor idProduct manufacturer product serial busnum devnum speed bDeviceClass bDeviceSubClass bDeviceProtocol driver ; do
-				[ -e "$d/$f" ] || continue
-				printf '%-22s = %s\n' "$f" "$(cat "$d/$f" 2>/dev/null)"
-			done
-			[ -L "$d/driver" ] && echo "driver-link = $(readlink "$d/driver" 2>/dev/null)"
-		done
-		echo "--- network after DWC2 rebind ---"
-		for n in /sys/class/net/* ; do
-			[ -d "$n" ] || continue
-			echo "--- $n ---"
-			for f in address operstate carrier type ; do
-				[ -e "$n/$f" ] || continue
-				printf '%-22s = %s\n' "$f" "$(cat "$n/$f" 2>/dev/null)"
-			done
-			[ -L "$n/device/driver" ] && echo "driver-link = $(readlink "$n/device/driver" 2>/dev/null)"
-		done
-		echo "--- iw dev after DWC2 rebind ---"
-		iw dev 2>&1
-		echo "--- lsmod wifi/usb after DWC2 rebind ---"
-		lsmod | grep -iE 'rtl|rtw|8188|cfg80211|mac80211|80211|usb' 2>&1
-		echo "--- RPPDBG dmesg lines after DWC2 rebind ---"
-		dmesg | grep -i 'RPPDBG' 2>&1 | tail -260
-		echo "--- dmesg tail after DWC2 rebind ---"
-		dmesg | grep -iE 'RPPDBG|usb|rtl|rtw|8188|wifi|wlan|cfg80211|firmware|phy|vcc|regulator' 2>&1 | tail -260
-
-			dump_lowlevel_usb_state "rocknix-late-after-rebind"
-			dump_broad_register_state "rocknix-late-after-rebind"
-
-			echo "=== USB / Wi-Fi dmesg lines ==="
+		echo "=== USB / Wi-Fi dmesg lines ==="
 		dmesg | grep -iE 'usb|mmc|sdio|rtl|rtw|8188|8189|8723|wifi|wlan|cfg80211|firmware|regulatory' 2>&1 | tail -220
 
 		echo "=== USB devices late ==="
@@ -775,7 +680,7 @@ sync
 
 	dmesg                       > "$OUT/dmesg-late.txt"      2>&1
 	journalctl -b -a --no-pager > "$OUT/journalctl-late.txt" 2>&1
-	dmesg | grep -iE 'RPPDBG|dwc2|usb2phy|usb |usb[0-9]|0bda|8179|rtl|rtw|8188|wifi|wlan|cfg80211|firmware|phy|vcc|regulator' \
+	dmesg | grep -iE 'dwc2|usb2phy|usb |usb[0-9]|0bda|8179|rtl|rtw|8188|wifi|wlan|cfg80211|firmware|phy|vcc|regulator' \
 		> "$OUT/rppocket-usb-late.txt" 2>&1
 
 	sync
@@ -786,680 +691,15 @@ mount -o remount,ro "$OUT" 2>/dev/null
 EOF
 chmod +x "$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
 
-# Optional one-shot kernel suspend-stage diagnostic.  At the "devices"
-# pm_test level Linux suspends drivers, waits five seconds, and reverses the
-# operation without entering the CPU/platform sleep state.  It therefore does
-# not depend on the power key, RTC, or any other hardware wake source.
-if (( PM_TEST_DEVICES )); then
-cat > "$STORE_MNT/.config/autostart/001-rppocket-pm-test-devices.sh" <<'EOF'
-#!/bin/sh
-
-MARK=/storage/.config/rppocket-pm-test-devices.once
-LOG=/storage/.cache/log/rppocket-pm-test-devices.log
-
-[ -e "$MARK" ] || exit 0
-rm -f "$MARK"
-
-(
-	sleep 45
-
-	dump_power_state() {
-		label="$1"
-		echo "=== $label ==="
-		date
-		for f in /sys/power/state /sys/power/mem_sleep /sys/power/pm_test \
-			 /sys/power/pm_async /sys/power/pm_print_times \
-			 /sys/power/pm_debug_messages /sys/power/pm_wakeup_irq \
-			 /sys/power/wakeup_count; do
-			[ -e "$f" ] || continue
-			echo "--- $f ---"
-			cat "$f" 2>&1 || true
-		done
-
-		mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
-		echo "--- /sys/kernel/debug/suspend_stats ---"
-		for f in /sys/kernel/debug/suspend_stats/*; do
-			[ -f "$f" ] || continue
-			printf '%s = ' "${f##*/}"
-			cat "$f" 2>&1 || true
-		done
-		echo "--- /sys/kernel/debug/wakeup_sources ---"
-		cat /sys/kernel/debug/wakeup_sources 2>&1 || true
-
-		echo "--- PMIC child power/wakeup state ---"
-		for d in /sys/devices/platform/ff180000.i2c/i2c-0/0-0020 \
-			 /sys/devices/platform/ff180000.i2c/i2c-0/0-0020/rk805-pwrkey.* \
-			 /sys/devices/platform/ff180000.i2c/i2c-0/0-0020/rk808-rtc.*; do
-			[ -d "$d" ] || continue
-			printf '%s: ' "$d"
-			cat "$d/power/wakeup" 2>&1 || true
-		done
-
-		echo "--- /proc/interrupts ---"
-		cat /proc/interrupts 2>&1 || true
-		echo "--- dmesg tail ---"
-		dmesg 2>&1 | tail -300
-	}
-
-	mkdir -p /storage/.cache/log
-	: >"$LOG"
-	exec >>"$LOG" 2>&1
-	echo "=== RPPocket one-shot pm_test=devices diagnostic ==="
-	dump_power_state before
-
-	# Stock 4.4 builds DWC2 as a module and explicitly removes it in the
-	# pre-sleep hook. ROCKNIX previously built it in, making its modules.bad
-	# entry ineffective. Reproduce and verify the stock precondition before
-	# entering the kernel directly.
-	echo "=== stock-matching DWC2 unload ==="
-	echo "--- before ---"
-	lsmod | grep -E '^dwc2([[:space:]]|$)' || echo "dwc2 not listed"
-	if [ -d /sys/module/dwc2 ]; then
-		modprobe -r dwc2
-		unload_status=$?
-		echo "modprobe -r dwc2 status: $unload_status"
-	else
-		echo "dwc2 was not loaded"
-	fi
-	echo "--- after ---"
-	lsmod | grep -E '^dwc2([[:space:]]|$)' || echo "dwc2 not listed"
-	if [ -d /sys/module/dwc2 ]; then
-		echo "ERROR: dwc2 remains loaded; refusing to run an invalid stock-matching test"
-		sync
-		exit 1
-	fi
-	echo "confirmed: /sys/module/dwc2 is absent"
-
-	# Emit every callback start/completion to the ramoops console ring.  If a
-	# callback blocks, CONFIG_DPM_WATCHDOG will panic after 20 seconds and name
-	# the device; the normal one-second panic reboot then preserves the record.
-	[ ! -w /sys/power/pm_print_times ] || echo 1 > /sys/power/pm_print_times
-	[ ! -w /sys/power/pm_debug_messages ] || echo 1 > /sys/power/pm_debug_messages
-	echo devices > /sys/power/pm_test
-	echo "=== armed pm_test ==="
-	cat /sys/power/pm_test
-	logger -t rppocket-pm-test \
-		"Writing freeze directly with pm_test=devices; automatic return expected in five seconds"
-	sync
-
-	# Do not use systemctl here: its suspend request returns to the caller
-	# before systemd enters the kernel, which races with resetting pm_test.
-	# The direct sysfs write blocks until the kernel has reversed the tested
-	# device-suspend phase.
-	echo "=== writing freeze to /sys/power/state ==="
-	date
-	echo freeze > /sys/power/state
-	status=$?
-
-	echo "=== /sys/power/state returned: $status ==="
-	dump_power_state after
-	echo none > /sys/power/pm_test 2>/dev/null || true
-	modprobe dwc2
-	echo "modprobe dwc2 restore status: $?"
-	sync
-) &
-
-exit 0
-EOF
-chmod +x "$STORE_MNT/.config/autostart/001-rppocket-pm-test-devices.sh"
-touch "$STORE_MNT/.config/rppocket-pm-test-devices.once" \
-	"$STORE_MNT/.config/rppocket-pm-test-devices-mode"
-else
-	rm -f "$STORE_MNT/.config/autostart/001-rppocket-pm-test-devices.sh" \
-		"$STORE_MNT/.config/rppocket-pm-test-devices.once" \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-mode"
-fi
-
-# Run headless GPU-isolation and real-freeze diagnostics from multi-user.target
-# rather than depending on graphical autostart. Each mode records and validates
-# whether the GPU is expected to be absent or present.
-if (( PM_TEST_DEVICES_NO_GPU )); then
-mkdir -p "$STORE_MNT/.config/system.d/multi-user.target.wants"
-cat > "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh" <<'EOF'
-#!/bin/sh
-
-MARK=/storage/.config/rppocket-pm-test-devices-no-gpu.once
-LOG=/storage/.cache/log/rppocket-pm-callback-walk.log
-
-[ -e "$MARK" ] || exit 0
-rm -f "$MARK"
-
-# The stock RPPocket DTS identifies GPIO0_C1 (global GPIO 17) as the
-# active-high blue status LED. Keep it solid while this headless test is
-# running so powered-off and device-stage-hung outcomes remain distinguishable.
-LED_GPIO=17
-if [ ! -d "/sys/class/gpio/gpio${LED_GPIO}" ]; then
-	echo "$LED_GPIO" > /sys/class/gpio/export 2>/dev/null || true
-	sleep 1
-fi
-if [ -d "/sys/class/gpio/gpio${LED_GPIO}" ]; then
-	echo out > "/sys/class/gpio/gpio${LED_GPIO}/direction" 2>/dev/null || true
-	# An unmistakable startup handshake: if this five-flash sequence is not
-	# seen, the user must stop rather than interpreting a black screen.
-	for ignored in 1 2 3 4 5; do
-		echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.15
-		echo 0 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.15
-	done
-	echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-fi
-
-sleep 45
-
-mkdir -p /storage/.cache/log
-: >"$LOG"
-exec >>"$LOG" 2>&1
-
-echo "=== RPPocket bounded PM callback walk after RK817 sequence fix ==="
-date
-uname -a
-
-echo "--- verify GPU isolation ---"
-if [ -e /dev/mali0 ] || [ -d /sys/module/mali_kbase ]; then
-	echo "ERROR: Mali is present; refusing an invalid no-GPU test"
-	ls -l /dev/mali* 2>&1 || true
-	lsmod | grep -i mali 2>&1 || true
-	sync
-	exit 1
-fi
-echo "confirmed: no /dev/mali0 and no mali_kbase module"
-if [ -d /sys/bus/platform/devices/ff400000.gpu ]; then
-	echo "ERROR: ff400000.gpu platform device exists despite disabled DT status"
-	sync
-	exit 1
-fi
-echo "confirmed: no ff400000.gpu platform device"
-
-echo "--- stock-matching DWC2 unload ---"
-lsmod | grep -E '^dwc2([[:space:]]|$)' || echo "dwc2 not listed"
-if [ -d /sys/module/dwc2 ]; then
-	modprobe -r dwc2
-	echo "modprobe -r dwc2 status: $?"
-fi
-if [ -d /sys/module/dwc2 ]; then
-	echo "ERROR: dwc2 remains loaded; refusing an invalid stock-matching test"
-	sync
-	exit 1
-fi
-echo "confirmed: /sys/module/dwc2 is absent"
-
-echo "--- bounded callback-walk control ---"
-mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
-LIMIT=/sys/kernel/debug/rppocket_pm_callback_limit
-if [ ! -w "$LIMIT" ]; then
-	echo "ERROR: $LIMIT is absent or not writable; refusing an unbounded test"
-	sync
-	exit 1
-fi
-echo "confirmed: $LIMIT is writable"
-
-echo "--- power state before ---"
-for f in /sys/power/state /sys/power/mem_sleep /sys/power/pm_test \
-	 /sys/power/pm_async /sys/power/pm_print_times \
-	 /sys/power/pm_debug_messages; do
-	[ -e "$f" ] || continue
-	echo "--- $f ---"
-	cat "$f" 2>&1 || true
-done
-
-echo "--- focused dmesg before ---"
-dmesg | grep -iE 'mali|gpu|dwc2|genpd|clk_gpu|pstore|ramoops|callback-walk' | tail -300
-
-[ ! -w /sys/power/pm_async ] || echo 0 > /sys/power/pm_async
-[ ! -w /sys/power/pm_print_times ] || echo 1 > /sys/power/pm_print_times
-[ ! -w /sys/power/pm_debug_messages ] || echo 1 > /sys/power/pm_debug_messages
-echo devices > /sys/power/pm_test
-echo "=== armed serialized bounded callback walk ==="
-cat /sys/power/pm_test
-printf 'pm_async='; cat /sys/power/pm_async 2>&1 || true
-sync
-
-# The first walk proved indices 0..462 safe and hung when index 463,
-# 0-0020/rk8xx-i2c, was allowed. Resume there after applying the vendor RK817
-# sleep-pin sequencing so the synced line below both retests that callback and
-# names any later blocker without replaying hundreds of known-safe trials.
-previous="index=463 phase=suspend device=0-0020 driver=rk8xx-i2c"
-limit=464
-while [ "$limit" -le 1024 ]; do
-	echo
-	echo "=== callback-walk trial limit=$limit ==="
-	if [ -n "$previous" ]; then
-		echo "ABOUT TO ALLOW PREVIOUSLY BLOCKED ENTRY: $previous"
-	fi
-	echo "$limit" > "$LIMIT"
-
-	# Visible progress: short blue pulse per safely bounded trial. The LED
-	# becoming solid identifies the trial that no longer returned.
-	if [ -d "/sys/class/gpio/gpio${LED_GPIO}" ]; then
-		echo 0 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.03
-		echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-	fi
-
-	sync
-	echo "writing freeze with callback limit $limit"
-	date
-	echo freeze > /sys/power/state
-	status=$?
-	echo "state write returned status=$status for limit=$limit"
-
-	candidate="$(dmesg | grep "RPPDBG callback-walk stop index=${limit} " | tail -1)"
-	if [ -z "$candidate" ]; then
-		echo "STOP: no synthetic callback-limit record for returned trial $limit"
-		echo "The walk either completed or failed before reaching its boundary."
-		dmesg | tail -300
-		break
-	fi
-	echo "BLOCKED SAFELY BEFORE: $candidate"
-	previous="$candidate"
-	limit=$((limit + 1))
-done
-
-echo 4294967295 > "$LIMIT" 2>/dev/null || true
-echo none > /sys/power/pm_test 2>/dev/null || true
-sync
-
-# Three quick blue flashes mark a completed walk before clean poweroff.
-if [ -d "/sys/class/gpio/gpio${LED_GPIO}" ]; then
-	for ignored in 1 2 3; do
-		echo 0 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.2
-		echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.2
-	done
-fi
-
-# With the GPU disabled there may be no usable UI. A clean automatic poweroff
-# leaves the blue LED dark and the card ready for inspection.
-systemctl --no-block poweroff
-exit 0
-EOF
-chmod +x "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-cat > "$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service" <<'EOF'
-[Unit]
-Description=RPPocket no-GPU device suspend isolation
-After=local-fs.target systemd-udev-trigger.service
-Before=graphical.target
-
-[Service]
-Type=oneshot
-TimeoutStartSec=infinity
-ExecStart=/storage/.config/rppocket-pm-test-devices-no-gpu.sh
-
-[Install]
-WantedBy=multi-user.target
-EOF
-ln -sf ../rppocket-pm-test-devices-no-gpu.service \
-	"$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-pm-test-devices-no-gpu.service"
-rm -f "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-wdt-pending" \
-	"$STORE_MNT/.cache/log/rppocket-pm-callback-walk.log"
-touch "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.once" \
-	"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-mode"
-elif (( PM_FREEZE_NO_GPU || PM_FREEZE )); then
-mkdir -p "$STORE_MNT/.config/system.d/multi-user.target.wants" \
-	"$STORE_MNT/.config/system.d/rocknix.target.wants"
-cat > "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh" <<'EOF'
-#!/bin/sh
-
-MARK=/storage/.config/rppocket-pm-test-devices-no-gpu.once
-MODE=/storage/.config/rppocket-pm-test-devices-no-gpu-mode
-LOG=/storage/.cache/log/rppocket-pm-freeze.log
-LED_GPIO=17
-
-[ -e "$MARK" ] || exit 0
-rm -f "$MARK"
-
-if [ ! -d "/sys/class/gpio/gpio${LED_GPIO}" ]; then
-	echo "$LED_GPIO" > /sys/class/gpio/export 2>/dev/null || true
-	sleep 1
-fi
-if [ -d "/sys/class/gpio/gpio${LED_GPIO}" ]; then
-	echo out > "/sys/class/gpio/gpio${LED_GPIO}/direction" 2>/dev/null || true
-	# Five flashes prove that this one-shot headless harness started.
-	for ignored in 1 2 3 4 5; do
-		echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.15
-		echo 0 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.15
-	done
-	echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-fi
-
-sleep 45
-
-mkdir -p /storage/.cache/log
-: >"$LOG"
-exec >>"$LOG" 2>&1
-
-echo "=== RPPocket real freeze/resume test after RK817 sequence fix ==="
-date
-uname -a
-
-expect_gpu="$(cat "$MODE" 2>/dev/null)"
-case "$expect_gpu" in
-	expect-present)
-		if [ ! -e /dev/mali0 ] || [ ! -d /sys/module/mali_kbase ] || \
-		   [ ! -d /sys/bus/platform/devices/ff400000.gpu ]; then
-			echo "ERROR: GPU was expected but is not fully present"
-			sync
-			exit 1
-		fi
-		echo "confirmed: GPU platform device, Mali module, and /dev/mali0 are present"
-		;;
-	expect-absent)
-		if [ -e /dev/mali0 ] || [ -d /sys/module/mali_kbase ] || \
-		   [ -d /sys/bus/platform/devices/ff400000.gpu ]; then
-			echo "ERROR: GPU isolation is not active"
-			sync
-			exit 1
-		fi
-		echo "confirmed: GPU device and Mali module are absent"
-		;;
-	*)
-		echo "ERROR: invalid GPU expectation in $MODE: $expect_gpu"
-		sync
-		exit 1
-		;;
-esac
-
-lsmod | grep -E '^dwc2([[:space:]]|$)' || echo "dwc2 not listed"
-if [ -d /sys/module/dwc2 ]; then
-	modprobe -r dwc2
-	echo "modprobe -r dwc2 status: $?"
-fi
-if [ -d /sys/module/dwc2 ]; then
-	echo "ERROR: dwc2 remains loaded; refusing this test"
-	sync
-	exit 1
-fi
-echo "confirmed: /sys/module/dwc2 is absent"
-
-# The callback walker defaults disabled, but force its U32_MAX sentinel before
-# this unbounded test in case debugfs retained an unexpected value.
-mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
-LIMIT=/sys/kernel/debug/rppocket_pm_callback_limit
-if [ ! -w "$LIMIT" ]; then
-	echo "ERROR: $LIMIT is absent or not writable"
-	sync
-	exit 1
-fi
-echo 4294967295 > "$LIMIT"
-echo none > /sys/power/pm_test
-[ ! -w /sys/power/pm_async ] || echo 0 > /sys/power/pm_async
-[ ! -w /sys/power/pm_print_times ] || echo 1 > /sys/power/pm_print_times
-[ ! -w /sys/power/pm_debug_messages ] || echo 1 > /sys/power/pm_debug_messages
-
-for f in /sys/power/state /sys/power/mem_sleep /sys/power/pm_test \
-	 /sys/power/pm_async; do
-	printf '%s: ' "$f"
-	cat "$f" 2>&1 || true
-done
-
-if ! command -v systemd-inhibit >/dev/null 2>&1; then
-	echo "ERROR: systemd-inhibit unavailable; refusing wake-key test"
-	sync
-	exit 1
-fi
-
-echo "ABOUT TO ENTER REAL FREEZE; LED will turn off until resume"
-date
-sync
-
-# Prevent the wake event from reaching logind as a second suspend request.
-# Turning the LED off inside the inhibited child gives the user an exact signal
-# that the direct state write is imminent.
-systemd-inhibit --what=handle-power-key --mode=block \
-	--who=rppocket-pm-freeze --why='single power-slider wake test' \
-	sh -c '
-		echo 0 > /sys/class/gpio/gpio17/value 2>/dev/null || true
-		sync
-		echo freeze > /sys/power/state
-	'
-status=$?
-
-echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-echo "REAL FREEZE RETURNED status=$status"
-date
-dmesg | tail -400
-sync
-
-# Three flashes and automatic poweroff mean the state write returned.
-if [ -d "/sys/class/gpio/gpio${LED_GPIO}" ]; then
-	for ignored in 1 2 3; do
-		echo 0 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.2
-		echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.2
-	done
-fi
-systemctl --no-block poweroff
-exit 0
-EOF
-chmod +x "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-if (( PM_FREEZE )); then
-cat > "$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service" <<'EOF'
-[Unit]
-Description=RPPocket GPU-present real freeze/resume test
-After=local-fs.target systemd-logind.service rocknix-autostart.service
-
-[Service]
-Type=oneshot
-TimeoutStartSec=infinity
-ExecStart=/storage/.config/rppocket-pm-test-devices-no-gpu.sh
-
-[Install]
-WantedBy=rocknix.target
-EOF
-	rm -f "$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-pm-test-devices-no-gpu.service"
-	ln -sf ../rppocket-pm-test-devices-no-gpu.service \
-		"$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-test-devices-no-gpu.service"
-else
-cat > "$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service" <<'EOF'
-[Unit]
-Description=RPPocket no-GPU real freeze/resume test
-After=local-fs.target systemd-udev-trigger.service systemd-logind.service
-Before=graphical.target
-
-[Service]
-Type=oneshot
-TimeoutStartSec=infinity
-ExecStart=/storage/.config/rppocket-pm-test-devices-no-gpu.sh
-
-[Install]
-WantedBy=multi-user.target
-EOF
-	rm -f "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-test-devices-no-gpu.service"
-	ln -sf ../rppocket-pm-test-devices-no-gpu.service \
-		"$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-pm-test-devices-no-gpu.service"
-fi
-rm -f "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-wdt-pending" \
-	"$STORE_MNT/.cache/log/rppocket-pm-callback-walk.log" \
-	"$STORE_MNT/.cache/log/rppocket-pm-freeze-no-gpu.log" \
-	"$STORE_MNT/.cache/log/rppocket-pm-freeze.log"
-touch "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.once"
-if (( PM_FREEZE )); then
-	echo expect-present > "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-mode"
-else
-	echo expect-absent > "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-mode"
-fi
-else
-	rm -f "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh" \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.once" \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-mode" \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-wdt-pending" \
-		"$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service" \
-		"$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-pm-test-devices-no-gpu.service" \
-		"$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-test-devices-no-gpu.service"
-fi
-
-if (( PM_DEEP )); then
-mkdir -p "$STORE_MNT/.config/system.d/rocknix.target.wants" \
-	"$STORE_MNT/.config/system.d/multi-user.target.wants"
-cat > "$STORE_MNT/.config/rppocket-pm-deep.sh" <<'EOF'
-#!/bin/sh
-
-MARK=/storage/.config/rppocket-pm-deep.once
-LOG=/storage/.cache/log/rppocket-pm-deep.log
-LED_GPIO=17
-
-[ -e "$MARK" ] || exit 0
-rm -f "$MARK"
-
-if [ ! -d "/sys/class/gpio/gpio${LED_GPIO}" ]; then
-	echo "$LED_GPIO" > /sys/class/gpio/export 2>/dev/null || true
-	sleep 1
-fi
-if [ -d "/sys/class/gpio/gpio${LED_GPIO}" ]; then
-	echo out > "/sys/class/gpio/gpio${LED_GPIO}/direction" 2>/dev/null || true
-	# Five flashes prove that this one-shot headless harness started.
-	for ignored in 1 2 3 4 5; do
-		echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.15
-		echo 0 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.15
-	done
-	echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-fi
-
-sleep 45
-
-mkdir -p /storage/.cache/log
-: >"$LOG"
-exec >>"$LOG" 2>&1
-
-echo "=== RPPocket stock-policy deep suspend/resume test ==="
-date
-uname -a
-
-if [ ! -e /dev/mali0 ] || [ ! -d /sys/module/mali_kbase ] || \
-   [ ! -d /sys/bus/platform/devices/ff400000.gpu ]; then
-	echo "ERROR: GPU was expected but is not fully present"
-	sync
-	exit 1
-fi
-echo "confirmed: GPU platform device, Mali module, and /dev/mali0 are present"
-
-if [ ! -L /sys/bus/platform/devices/rockchip-suspend/driver ]; then
-	echo "ERROR: rockchip-suspend is not bound to its BL31 policy driver"
-	sync
-	exit 1
-fi
-echo "confirmed: rockchip-suspend BL31 policy driver is bound"
-
-lsmod | grep -E '^dwc2([[:space:]]|$)' || echo "dwc2 not listed"
-if [ -d /sys/module/dwc2 ]; then
-	modprobe -r dwc2
-	echo "modprobe -r dwc2 status: $?"
-fi
-if [ -d /sys/module/dwc2 ]; then
-	echo "ERROR: dwc2 remains loaded; refusing this test"
-	sync
-	exit 1
-fi
-echo "confirmed: /sys/module/dwc2 is absent"
-
-mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
-LIMIT=/sys/kernel/debug/rppocket_pm_callback_limit
-if [ ! -w "$LIMIT" ]; then
-	echo "ERROR: $LIMIT is absent or not writable"
-	sync
-	exit 1
-fi
-echo 4294967295 > "$LIMIT"
-echo none > /sys/power/pm_test
-[ ! -w /sys/power/pm_async ] || echo 0 > /sys/power/pm_async
-[ ! -w /sys/power/pm_print_times ] || echo 1 > /sys/power/pm_print_times
-[ ! -w /sys/power/pm_debug_messages ] || echo 1 > /sys/power/pm_debug_messages
-
-if ! grep -qw mem /sys/power/state; then
-	echo "ERROR: mem is unavailable in /sys/power/state"
-	sync
-	exit 1
-fi
-if ! tr '[]' '  ' < /sys/power/mem_sleep | grep -qw deep; then
-	echo "ERROR: deep is unavailable in /sys/power/mem_sleep"
-	sync
-	exit 1
-fi
-echo deep > /sys/power/mem_sleep
-if ! grep -q '\[deep\]' /sys/power/mem_sleep; then
-	echo "ERROR: failed to select deep mem_sleep"
-	sync
-	exit 1
-fi
-
-for f in /sys/power/state /sys/power/mem_sleep /sys/power/pm_test \
-	 /sys/power/pm_async; do
-	printf '%s: ' "$f"
-	cat "$f" 2>&1 || true
-done
-
-if ! command -v systemd-inhibit >/dev/null 2>&1; then
-	echo "ERROR: systemd-inhibit unavailable; refusing wake-key test"
-	sync
-	exit 1
-fi
-
-echo "ABOUT TO ENTER DEEP MEM; LED will turn off until resume"
-date
-sync
-
-# Keep the wake event from reaching logind as a second suspend request.
-systemd-inhibit --what=handle-power-key --mode=block \
-	--who=rppocket-pm-deep --why='single power-slider deep wake test' \
-	sh -c '
-		echo 0 > /sys/class/gpio/gpio17/value 2>/dev/null || true
-		sync
-		echo mem > /sys/power/state
-	'
-status=$?
-
-echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-echo "DEEP MEM RETURNED status=$status"
-date
-dmesg | tail -600
-sync
-
-# Three flashes and automatic poweroff mean the state write returned.
-if [ -d "/sys/class/gpio/gpio${LED_GPIO}" ]; then
-	for ignored in 1 2 3; do
-		echo 0 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.2
-		echo 1 > "/sys/class/gpio/gpio${LED_GPIO}/value" 2>/dev/null || true
-		sleep 0.2
-	done
-fi
-systemctl --no-block poweroff
-exit 0
-EOF
-chmod +x "$STORE_MNT/.config/rppocket-pm-deep.sh"
-cat > "$STORE_MNT/.config/system.d/rppocket-pm-deep.service" <<'EOF'
-[Unit]
-Description=RPPocket stock-policy deep suspend/resume test
-After=local-fs.target systemd-logind.service rocknix-autostart.service
-
-[Service]
-Type=oneshot
-TimeoutStartSec=infinity
-ExecStart=/storage/.config/rppocket-pm-deep.sh
-
-[Install]
-WantedBy=rocknix.target
-EOF
-rm -f "$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-pm-deep.service"
-ln -sf ../rppocket-pm-deep.service \
-	"$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-deep.service"
-rm -f "$STORE_MNT/.cache/log/rppocket-pm-deep.log"
-touch "$STORE_MNT/.config/rppocket-pm-deep.once"
-else
-	rm -f "$STORE_MNT/.config/rppocket-pm-deep.sh" \
-		"$STORE_MNT/.config/rppocket-pm-deep.once" \
-		"$STORE_MNT/.config/system.d/rppocket-pm-deep.service" \
-		"$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-pm-deep.service" \
-		"$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-deep.service"
-fi
-
+# Remove harnesses produced by obsolete versions of this helper even when the
+# current invocation is preparing another diagnostic mode.
+rm -f "$STORE_MNT/.config/autostart/001-rppocket-pm-test-devices.sh" \
+	"$STORE_MNT/.config"/rppocket-pm-* \
+	"$STORE_MNT/.config/system.d"/rppocket-pm-* \
+	"$STORE_MNT/.config/system.d/multi-user.target.wants"/rppocket-pm-* \
+	"$STORE_MNT/.config/system.d/rocknix.target.wants"/rppocket-pm-*
+
+# Optional startup gate for the normal logind power-slider policy.
 if (( POWER_SLIDER_TEST )); then
 mkdir -p "$STORE_MNT/.config/system.d/rocknix.target.wants" \
 	"$STORE_MNT/.config/system.d/multi-user.target.wants"
@@ -1791,7 +1031,7 @@ start)
 		*) echo "ERROR: effective long action is not poweroff"; sync; exit 1 ;;
 	esac
 
-	echo "confirmed: passive collector active; no debug PM initiator or broad hook"
+	echo "confirmed: passive collector active; no suspend initiator or broad debug hook"
 	echo "READY: perform ten normal short suspend/resume cycles"
 	sync
 	;;
@@ -1849,9 +1089,13 @@ fi
 
 if (( RELEASE )); then
 	rm -f "$STORE_MNT/.config/autostart/000-rppocket-debug.sh" \
+		"$STORE_MNT/.config/autostart/001-rppocket-pm-test-devices.sh" \
 		"$STORE_MNT/.config/rppocket-no-dwc2-rebind" \
 		"$STORE_MNT/.config/rppocket-stock-init-gpio1" \
-		"$STORE_MNT/.config/rppocket-pm-test-install.manifest" \
+		"$STORE_MNT/.config"/rppocket-pm-* \
+		"$STORE_MNT/.config/system.d"/rppocket-pm-* \
+		"$STORE_MNT/.config/system.d/multi-user.target.wants"/rppocket-pm-* \
+		"$STORE_MNT/.config/system.d/rocknix.target.wants"/rppocket-pm-* \
 		"$STORE_MNT/.config/rppocket-power-slider-reliability-test.sh" \
 		"$STORE_MNT/.config/rppocket-power-slider-reliability-test.once" \
 		"$STORE_MNT/.config/system.d/rppocket-power-slider-reliability-test.service" \
@@ -1862,267 +1106,14 @@ if (( RELEASE )); then
 		"$STORE_MNT/.cache/log/rppocket-power-slider-reliability-test.log" \
 		"$STORE_MNT/.cache/log/rppocket-power-slider-reliability-orderly-shutdown.log" \
 		"$STORE_MNT/.cache/log/rppocket-power-slider-reliability-v1-journal.log"
+	rm -f "$STORE_MNT/.cache/log"/rppocket-*.log
 	rm -rf "$STORE_MNT/.cache/log/journal"
 	rmdir "$STORE_MNT/.cache/journald.conf.d" 2>/dev/null || true
 fi
 
-if (( WIFI_RAIL_SCAN )); then
-cat > "$STORE_MNT/.config/autostart/010-rppocket-wifi-rail-scan.sh" <<'EOF'
-#!/bin/sh
-# Manual rail-identification helper.  It drives the remaining stock-derived,
-# currently-unproven GPIO candidates one at a time so the YJ33 EN/output rail
-# can be measured without rebuilding for every GPIO.
-
-OUT=/flash
-LOG="$OUT/rppocket-wifi-rail-scan.txt"
-CUR="$OUT/rppocket-wifi-rail-scan-current.txt"
-
-export_gpio() {
-	gpio="$1"
-	if [ ! -d "/sys/class/gpio/gpio${gpio}" ]; then
-		echo "$gpio" > /sys/class/gpio/export 2>/dev/null || return 1
-		sleep 0.2
-	fi
-	echo 0 > "/sys/class/gpio/gpio${gpio}/active_low" 2>/dev/null || true
-	return 0
-}
-
-mark_state() {
-	text="$1"
-	mount -o remount,rw "$OUT" 2>/dev/null || true
-	echo "$(date +%s) ${text}" >> "$LOG" 2>/dev/null || true
-	echo "$text" > "$CUR" 2>/dev/null || true
-}
-
-drive_gpio() {
-	gpio="$1"
-	value="$2"
-	label="$3"
-
-	mark_state "begin ${label}: gpio${gpio}=physical-${value}"
-
-	if ! export_gpio "$gpio"; then
-		mark_state "${label} gpio${gpio}: export failed"
-		return
-	fi
-
-	echo out > "/sys/class/gpio/gpio${gpio}/direction" 2>/dev/null || true
-	echo "$value" > "/sys/class/gpio/gpio${gpio}/value" 2>/dev/null || true
-	actual="$(cat "/sys/class/gpio/gpio${gpio}/value" 2>/dev/null || echo "?")"
-	mark_state "${label}: gpio${gpio}=physical-${value} actual=${actual}"
-	sleep 30
-}
-
-drive_all_stock_low() {
-	label="stock AMUX all PB0/PB3/PB5 low"
-	hold="${1:-30}"
-
-	mark_state "begin ${label}"
-	for gpio in 96 99 101; do
-		export_gpio "$gpio" || true
-		echo out > "/sys/class/gpio/gpio${gpio}/direction" 2>/dev/null || true
-		echo 0 > "/sys/class/gpio/gpio${gpio}/value" 2>/dev/null || true
-	done
-	actual96="$(cat /sys/class/gpio/gpio96/value 2>/dev/null || echo "?")"
-	actual99="$(cat /sys/class/gpio/gpio99/value 2>/dev/null || echo "?")"
-	actual101="$(cat /sys/class/gpio/gpio101/value 2>/dev/null || echo "?")"
-	mark_state "${label}: gpio96=${actual96} gpio99=${actual99} gpio101=${actual101} hold=${hold}s"
-	sleep "$hold"
-}
-
-(
-	mount -o remount,rw "$OUT" 2>/dev/null || true
-	{
-		echo "RPPocket Wi-Fi rail scan"
-		echo "Measure YT1/E1-T/YB2 while each line is active."
-		echo "GPIO0_PA0 and GPIO2_PB1 already tested negative."
-		echo "Each remaining state lasts 30 seconds. Physical value is raw GPIO level."
-		echo
-	} > "$LOG"
-
-	drive_gpio 67 1 "candidate-c stock bat_low GPIO2_PA3 high"
-	drive_gpio 67 0 "candidate-c stock bat_low GPIO2_PA3 low"
-	drive_gpio 15 1 "candidate-d stock-comment vcc_host GPIO0_PB7 high"
-	drive_gpio 15 0 "candidate-d stock-comment vcc_host GPIO0_PB7 low"
-
-	echo "done" > "$CUR"
-	echo "$(date +%s) done" >> "$LOG"
-	sync
-	mount -o remount,ro "$OUT" 2>/dev/null || true
-) &
-EOF
-chmod +x "$STORE_MNT/.config/autostart/010-rppocket-wifi-rail-scan.sh"
-else
-	rm -f "$STORE_MNT/.config/autostart/010-rppocket-wifi-rail-scan.sh"
-fi
-
-if (( RK817_GPIO_SCAN )); then
-cat > "$STORE_MNT/.config/autostart/011-rppocket-rk817-gpio-scan.sh" <<'EOF'
-#!/bin/sh
-# Manual RK817 GPIO identification helper.  It tries PMIC TS/GT GPIO output
-# states through RK817_GPIO_INT_CFG (0xfe) so the YJ33 EN/output rail can be
-# measured without a kernel rebuild.
-
-OUT=/flash
-LOG="$OUT/rppocket-rk817-gpio-scan.txt"
-CUR="$OUT/rppocket-rk817-gpio-scan-current.txt"
-BUS=0
-ADDR=0x20
-REG=0xfe
-
-hex_to_dec() {
-	printf "%d" "$1" 2>/dev/null || printf "0"
-}
-
-read_reg() {
-	i2cget -f -y "$BUS" "$ADDR" "$REG" 2>/dev/null || echo "0x00"
-}
-
-write_reg() {
-	label="$1"
-	value="$2"
-
-	echo "$(date +%s) begin ${label}: RK817[0xfe]=${value}" >> "$LOG"
-	echo "begin ${label}: RK817[0xfe]=${value}" > "$CUR"
-	i2cset -f -y "$BUS" "$ADDR" "$REG" "$value" 2>> "$LOG" || true
-	actual="$(read_reg)"
-	echo "$(date +%s) ${label}: actual=${actual}" >> "$LOG"
-	echo "${label}: RK817[0xfe]=${actual}" > "$CUR"
-	sleep 30
-}
-
-(
-	mount -o remount,rw "$OUT" 2>/dev/null || true
-	{
-		echo "RPPocket RK817 GPIO scan"
-		echo "Measure E1-T/YT1/YB2-W1/X2/X3 during each 30s state."
-		echo "TS high means bits func/value/dir = 0x1c."
-		echo "GT high means bits func/value/dir = 0xe0."
-		echo
-	} > "$LOG"
-
-	if ! command -v i2cget >/dev/null 2>&1 || ! command -v i2cset >/dev/null 2>&1; then
-		echo "i2cget/i2cset unavailable" >> "$LOG"
-		echo "i2c tools unavailable" > "$CUR"
-		exit 0
-	fi
-
-	BEFORE="$(read_reg)"
-	ORIG_DEC=0x20
-	echo "$(date +%s) initial RK817[0xfe]=${BEFORE}" >> "$LOG"
-	echo "$(date +%s) baseline RK817[0xfe]=0x20" >> "$LOG"
-
-	TS_HIGH_DEC=$(( (ORIG_DEC & ~0x1c) | 0x1c ))
-	GT_HIGH_DEC=$(( (ORIG_DEC & ~0xe0) | 0xe0 ))
-	BOTH_HIGH_DEC=$(( (ORIG_DEC & ~0xfc) | 0xfc ))
-
-	write_reg "baseline hold" "$(printf '0x%02x' "$ORIG_DEC")"
-	write_reg "PMIC gpio_ts output high" "$(printf '0x%02x' "$TS_HIGH_DEC")"
-	write_reg "PMIC gpio_gt output high" "$(printf '0x%02x' "$GT_HIGH_DEC")"
-	write_reg "PMIC gpio_ts and gpio_gt output high" "$(printf '0x%02x' "$BOTH_HIGH_DEC")"
-	write_reg "restore baseline" "$(printf '0x%02x' "$ORIG_DEC")"
-
-	echo "done" > "$CUR"
-	echo "$(date +%s) done" >> "$LOG"
-	sync
-	mount -o remount,ro "$OUT" 2>/dev/null || true
-) &
-EOF
-chmod +x "$STORE_MNT/.config/autostart/011-rppocket-rk817-gpio-scan.sh"
-else
-	rm -f "$STORE_MNT/.config/autostart/011-rppocket-rk817-gpio-scan.sh"
-fi
-
-if (( AMUX_GPIO_SCAN )); then
-cat > "$STORE_MNT/.config/autostart/012-rppocket-amux-gpio-scan.sh" <<'EOF'
-#!/bin/sh
-# Manual stock-AMUX GPIO identification helper.  The stock odroidgo3-joypad
-# driver requests GPIO3_PB0/PB3/PB5 and drives them raw low during probe.
-# ROCKNIX does not currently claim these lines.
-
-OUT=/flash
-LOG="$OUT/rppocket-amux-gpio-scan.txt"
-CUR="$OUT/rppocket-amux-gpio-scan-current.txt"
-
-export_gpio() {
-	gpio="$1"
-	if [ ! -d "/sys/class/gpio/gpio${gpio}" ]; then
-		echo "$gpio" > /sys/class/gpio/export 2>/dev/null || return 1
-		sleep 0.2
-	fi
-	echo 0 > "/sys/class/gpio/gpio${gpio}/active_low" 2>/dev/null || true
-	return 0
-}
-
-mark_state() {
-	text="$1"
-	mount -o remount,rw "$OUT" 2>/dev/null || true
-	echo "$(date +%s) ${text}" >> "$LOG" 2>/dev/null || true
-	echo "$text" > "$CUR" 2>/dev/null || true
-}
-
-drive_gpio() {
-	gpio="$1"
-	value="$2"
-	label="$3"
-
-	mark_state "begin ${label}: gpio${gpio}=physical-${value}"
-
-	if ! export_gpio "$gpio"; then
-		mark_state "${label} gpio${gpio}: export failed"
-		return
-	fi
-
-	echo out > "/sys/class/gpio/gpio${gpio}/direction" 2>/dev/null || true
-	echo "$value" > "/sys/class/gpio/gpio${gpio}/value" 2>/dev/null || true
-	actual="$(cat "/sys/class/gpio/gpio${gpio}/value" 2>/dev/null || echo "?")"
-	mark_state "${label}: gpio${gpio}=physical-${value} actual=${actual}"
-	sleep 30
-}
-
-drive_all_stock_low() {
-	label="stock AMUX all PB0/PB3/PB5 low"
-
-	mark_state "begin ${label}"
-	for gpio in 96 99 101; do
-		export_gpio "$gpio" || true
-		echo out > "/sys/class/gpio/gpio${gpio}/direction" 2>/dev/null || true
-		echo 0 > "/sys/class/gpio/gpio${gpio}/value" 2>/dev/null || true
-	done
-	actual96="$(cat /sys/class/gpio/gpio96/value 2>/dev/null || echo "?")"
-	actual99="$(cat /sys/class/gpio/gpio99/value 2>/dev/null || echo "?")"
-	actual101="$(cat /sys/class/gpio/gpio101/value 2>/dev/null || echo "?")"
-	mark_state "${label}: gpio96=${actual96} gpio99=${actual99} gpio101=${actual101}"
-	sleep 30
-}
-
-(
-	mount -o remount,rw "$OUT" 2>/dev/null || true
-	{
-		echo "RPPocket stock AMUX GPIO scan"
-		echo "Measure E1-T/YT1/YB2/W1/X pads during each 30s state."
-		echo "Stock odroidgo3-joypad drives GPIO3_PB0/PB3/PB5 raw low."
-		echo "GPIO numbers: PB0=96, PB3=99, PB5=101."
-		echo
-	} > "$LOG"
-
-	drive_all_stock_low 300
-	drive_gpio 96 0 "stock AMUX-A GPIO3_PB0 low"
-	drive_gpio 96 1 "stock AMUX-A GPIO3_PB0 high"
-	drive_gpio 99 0 "stock AMUX-B GPIO3_PB3 low"
-	drive_gpio 99 1 "stock AMUX-B GPIO3_PB3 high"
-	drive_gpio 101 0 "stock AMUX-EN GPIO3_PB5 low"
-	drive_gpio 101 1 "stock AMUX-EN GPIO3_PB5 high"
-
-	mark_state "done"
-	sync
-	mount -o remount,ro "$OUT" 2>/dev/null || true
-) &
-EOF
-chmod +x "$STORE_MNT/.config/autostart/012-rppocket-amux-gpio-scan.sh"
-else
-	rm -f "$STORE_MNT/.config/autostart/012-rppocket-amux-gpio-scan.sh"
-fi
+rm -f "$STORE_MNT/.config/autostart/010-rppocket-wifi-rail-scan.sh" \
+	"$STORE_MNT/.config/autostart/011-rppocket-rk817-gpio-scan.sh" \
+	"$STORE_MNT/.config/autostart/012-rppocket-amux-gpio-scan.sh"
 
 # --- copy any local ROMs from debug/ to /storage/games-internal/roms/ ------
 # Drop a ROM next to pre.sh and it gets installed at flash time.  ROCKNIX's
@@ -2148,151 +1139,12 @@ for src in "$HERE"/*.{gb,gbc,gba,nes,smc,sfc,md,gen,smd,n64,z64,v64,pce}; do
 done
 shopt -u nullglob
 
-# Do not report a prepared PM test unless every storage-backed component is
-# present and internally consistent. The user keeps the card in the host after
+# Do not report a prepared power-slider test unless every storage-backed
+# component is present and internally consistent. The user keeps the card in the host after
 # this step so the agent can independently inspect these files before boot.
-rm -f "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
-if (( PM_TEST_DEVICES )); then
-	test -x "$STORE_MNT/.config/autostart/001-rppocket-pm-test-devices.sh"
-	test -f "$STORE_MNT/.config/rppocket-pm-test-devices.once"
-	test -f "$STORE_MNT/.config/rppocket-pm-test-devices-mode"
-	{
-		echo "harness=rppocket-pm-test-devices-v1"
-		sha256sum "$STORE_MNT/.config/autostart/001-rppocket-pm-test-devices.sh"
-		date -u +prepared_utc=%Y-%m-%dT%H:%M:%SZ
-	} > "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
-	echo ">>> VERIFIED: direct device PM-test hook, marker, and mode are installed."
-elif (( PM_TEST_DEVICES_NO_GPU )); then
-	test -x "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	test -f "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.once"
-	test -f "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-mode"
-	test -f "$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service"
-	test -L "$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-pm-test-devices-no-gpu.service"
-	test "$(readlink "$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-pm-test-devices-no-gpu.service")" = \
-		"../rppocket-pm-test-devices-no-gpu.service"
-	test ! -e "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-wdt-pending"
-	grep -q 'bounded callback-walk control' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	grep -q 'ABOUT TO ALLOW PREVIOUSLY BLOCKED ENTRY' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	grep -q '^limit=464$' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	grep -q 'previous="index=463 phase=suspend device=0-0020 driver=rk8xx-i2c"' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	{
-		echo "harness=rppocket-no-gpu-rk817-fix-walk-v3"
-		sha256sum \
-			"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh" \
-			"$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service"
-		echo "service_link=../rppocket-pm-test-devices-no-gpu.service"
-		date -u +prepared_utc=%Y-%m-%dT%H:%M:%SZ
-	} > "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
-	echo ">>> VERIFIED: no-GPU callback-walk service, script, markers, and link are installed."
-elif (( PM_FREEZE_NO_GPU || PM_FREEZE )); then
-	test -x "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	test -f "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.once"
-	test -f "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-mode"
-	test -f "$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service"
-	if (( PM_FREEZE )); then
-		service_target=rocknix.target
-		test ! -e "$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-pm-test-devices-no-gpu.service"
-		grep -q '^After=.*rocknix-autostart.service' \
-			"$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service"
-		grep -qx 'WantedBy=rocknix.target' \
-			"$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service"
-	else
-		service_target=multi-user.target
-		test ! -e "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-test-devices-no-gpu.service"
-		grep -qx 'Before=graphical.target' \
-			"$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service"
-		grep -qx 'WantedBy=multi-user.target' \
-			"$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service"
-	fi
-	service_link="$STORE_MNT/.config/system.d/$service_target.wants/rppocket-pm-test-devices-no-gpu.service"
-	test -L "$service_link"
-	test "$(readlink "$service_link")" = "../rppocket-pm-test-devices-no-gpu.service"
-	test ! -e "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-wdt-pending"
-	test ! -e "$STORE_MNT/.cache/log/rppocket-pm-callback-walk.log"
-	test ! -e "$STORE_MNT/.cache/log/rppocket-pm-freeze-no-gpu.log"
-	test ! -e "$STORE_MNT/.cache/log/rppocket-pm-freeze.log"
-	if (( PM_FREEZE )); then
-		grep -qx 'expect-present' "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-mode"
-	else
-		grep -qx 'expect-absent' "$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu-mode"
-	fi
-	grep -q 'real freeze/resume test after RK817 sequence fix' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	grep -q 'ABOUT TO ENTER REAL FREEZE' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	grep -q 'systemd-inhibit --what=handle-power-key --mode=block' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	grep -q 'echo 4294967295 > "$LIMIT"' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	grep -q 'echo none > /sys/power/pm_test' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	grep -q 'echo 0 > /sys/power/pm_async' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	grep -q 'echo freeze > /sys/power/state' \
-		"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh"
-	{
-		if (( PM_FREEZE )); then
-			echo "harness=rppocket-gpu-real-freeze-v7"
-		else
-			echo "harness=rppocket-no-gpu-real-freeze-v6"
-		fi
-		sha256sum \
-			"$STORE_MNT/.config/rppocket-pm-test-devices-no-gpu.sh" \
-			"$STORE_MNT/.config/system.d/rppocket-pm-test-devices-no-gpu.service"
-		echo "service_target=$service_target"
-		echo "service_link=../rppocket-pm-test-devices-no-gpu.service"
-		date -u +prepared_utc=%Y-%m-%dT%H:%M:%SZ
-	} > "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
-	echo ">>> VERIFIED: real-freeze service, GPU expectation, script, markers, and link are installed."
-elif (( PM_DEEP )); then
-	test -x "$STORE_MNT/.config/rppocket-pm-deep.sh"
-	test -f "$STORE_MNT/.config/rppocket-pm-deep.once"
-	test -f "$STORE_MNT/.config/system.d/rppocket-pm-deep.service"
-	test -L "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-deep.service"
-	test "$(readlink "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-deep.service")" = \
-		"../rppocket-pm-deep.service"
-	test ! -e "$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-pm-deep.service"
-	test ! -e "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-test-devices-no-gpu.service"
-	test ! -e "$STORE_MNT/.cache/log/rppocket-pm-deep.log"
-	grep -qx 'Description=RPPocket stock-policy deep suspend/resume test' \
-		"$STORE_MNT/.config/system.d/rppocket-pm-deep.service"
-	grep -q '^After=.*rocknix-autostart.service' \
-		"$STORE_MNT/.config/system.d/rppocket-pm-deep.service"
-	grep -qx 'TimeoutStartSec=infinity' \
-		"$STORE_MNT/.config/system.d/rppocket-pm-deep.service"
-	grep -qx 'WantedBy=rocknix.target' \
-		"$STORE_MNT/.config/system.d/rppocket-pm-deep.service"
-	grep -q 'GPU was expected but is not fully present' \
-		"$STORE_MNT/.config/rppocket-pm-deep.sh"
-	grep -q 'rockchip-suspend BL31 policy driver is bound' \
-		"$STORE_MNT/.config/rppocket-pm-deep.sh"
-	grep -q 'modprobe -r dwc2' "$STORE_MNT/.config/rppocket-pm-deep.sh"
-	grep -q 'echo 4294967295 > "$LIMIT"' "$STORE_MNT/.config/rppocket-pm-deep.sh"
-	grep -q 'echo none > /sys/power/pm_test' "$STORE_MNT/.config/rppocket-pm-deep.sh"
-	grep -q 'echo 0 > /sys/power/pm_async' "$STORE_MNT/.config/rppocket-pm-deep.sh"
-	grep -q 'echo deep > /sys/power/mem_sleep' "$STORE_MNT/.config/rppocket-pm-deep.sh"
-	grep -q 'systemd-inhibit --what=handle-power-key --mode=block' \
-		"$STORE_MNT/.config/rppocket-pm-deep.sh"
-	grep -q 'echo mem > /sys/power/state' "$STORE_MNT/.config/rppocket-pm-deep.sh"
-	grep -q 'DEEP MEM RETURNED status=' "$STORE_MNT/.config/rppocket-pm-deep.sh"
-	grep -q '/storage/.config/rppocket-pm-deep.once' \
-		"$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
-	{
-		echo "harness=rppocket-stock-policy-deep-v2"
-		sha256sum \
-			"$STORE_MNT/.config/rppocket-pm-deep.sh" \
-			"$STORE_MNT/.config/system.d/rppocket-pm-deep.service" \
-			"$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
-		echo "service_target=rocknix.target"
-		echo "service_link=../rppocket-pm-deep.service"
-		date -u +prepared_utc=%Y-%m-%dT%H:%M:%SZ
-	} > "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
-	echo ">>> VERIFIED: deep-mem service, marker, controls, and link are installed."
-elif (( POWER_SLIDER_TEST )); then
+rm -f "$STORE_MNT/.config/rppocket-test-install.manifest" \
+	"$STORE_MNT/.config/rppocket-pm-test-install.manifest"
+if (( POWER_SLIDER_TEST )); then
 	test -x "$STORE_MNT/.config/rppocket-power-slider-test.sh"
 	test -f "$STORE_MNT/.config/rppocket-power-slider-test.once"
 	test -f "$STORE_MNT/.config/system.d/rppocket-power-slider-test.service"
@@ -2300,8 +1152,6 @@ elif (( POWER_SLIDER_TEST )); then
 	test "$(readlink "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-power-slider-test.service")" = \
 		"../rppocket-power-slider-test.service"
 	test ! -e "$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-power-slider-test.service"
-	test ! -e "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-deep.service"
-	test ! -e "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-test-devices-no-gpu.service"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-test.log"
 	grep -q 'effective short action is not suspend' \
 		"$STORE_MNT/.config/rppocket-power-slider-test.sh"
@@ -2322,7 +1172,7 @@ elif (( POWER_SLIDER_TEST )); then
 		echo "service_target=rocknix.target"
 		echo "service_link=../rppocket-power-slider-test.service"
 		date -u +prepared_utc=%Y-%m-%dT%H:%M:%SZ
-	} > "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
+	} > "$STORE_MNT/.config/rppocket-test-install.manifest"
 	echo ">>> VERIFIED: normal power-slider policy gate, marker, and link are installed."
 elif (( POWER_SLIDER_LONG_TEST )); then
 	test -x "$STORE_MNT/.config/rppocket-power-slider-long-test.sh"
@@ -2333,7 +1183,6 @@ elif (( POWER_SLIDER_LONG_TEST )); then
 		"../rppocket-power-slider-long-test.service"
 	test ! -e "$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-power-slider-long-test.service"
 	test ! -e "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-power-slider-test.service"
-	test ! -e "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-deep.service"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-long-test.log"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-long-orderly-shutdown.log"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-long-v1-journal.log"
@@ -2353,7 +1202,7 @@ elif (( POWER_SLIDER_LONG_TEST )); then
 		echo "service_target=rocknix.target"
 		echo "service_link=../rppocket-power-slider-long-test.service"
 		date -u +prepared_utc=%Y-%m-%dT%H:%M:%SZ
-	} > "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
+	} > "$STORE_MNT/.config/rppocket-test-install.manifest"
 	echo ">>> VERIFIED: long-press gate, shutdown proof hook, marker, and link are installed."
 elif (( POWER_SLIDER_RELIABILITY_TEST )); then
 	test -x "$STORE_MNT/.config/rppocket-power-slider-reliability-test.sh"
@@ -2365,7 +1214,6 @@ elif (( POWER_SLIDER_RELIABILITY_TEST )); then
 	test ! -e "$STORE_MNT/.config/system.d/multi-user.target.wants/rppocket-power-slider-reliability-test.service"
 	test ! -e "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-power-slider-long-test.service"
 	test ! -e "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-power-slider-test.service"
-	test ! -e "$STORE_MNT/.config/system.d/rocknix.target.wants/rppocket-pm-deep.service"
 	test ! -e "$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-reliability-test.log"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-reliability-orderly-shutdown.log"
@@ -2376,7 +1224,7 @@ elif (( POWER_SLIDER_RELIABILITY_TEST )); then
 		"$STORE_MNT/.config/system.d/rppocket-power-slider-reliability-test.service"
 	grep -q 'RELIABILITY ORDERLY SHUTDOWN HOOK REACHED' \
 		"$STORE_MNT/.config/rppocket-power-slider-reliability-test.sh"
-	grep -q 'no debug PM initiator or broad hook' \
+	grep -q 'no suspend initiator or broad debug hook' \
 		"$STORE_MNT/.config/rppocket-power-slider-reliability-test.sh"
 	{
 		echo "harness=rppocket-production-power-slider-reliability-v1"
@@ -2387,13 +1235,13 @@ elif (( POWER_SLIDER_RELIABILITY_TEST )); then
 		echo "service_target=rocknix.target"
 		echo "service_link=../rppocket-power-slider-reliability-test.service"
 		date -u +prepared_utc=%Y-%m-%dT%H:%M:%SZ
-	} > "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
+	} > "$STORE_MNT/.config/rppocket-test-install.manifest"
 	echo ">>> VERIFIED: passive reliability collector is sole service; broad debug is absent."
 elif (( RELEASE )); then
 	test ! -e "$STORE_MNT/.config/autostart/000-rppocket-debug.sh"
 	test ! -e "$STORE_MNT/.config/rppocket-no-dwc2-rebind"
 	test ! -e "$STORE_MNT/.config/rppocket-stock-init-gpio1"
-	test ! -e "$STORE_MNT/.config/rppocket-pm-test-install.manifest"
+	test ! -e "$STORE_MNT/.config/rppocket-test-install.manifest"
 	test ! -e "$STORE_MNT/.config/rppocket-power-slider-reliability-test.sh"
 	test ! -e "$STORE_MNT/.config/rppocket-power-slider-reliability-test.once"
 	test ! -e "$STORE_MNT/.config/system.d/rppocket-power-slider-reliability-test.service"
@@ -2405,8 +1253,19 @@ elif (( RELEASE )); then
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-reliability-test.log"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-reliability-orderly-shutdown.log"
 	test ! -e "$STORE_MNT/.cache/log/rppocket-power-slider-reliability-v1-journal.log"
-	if find "$STORE_MNT/.config/system.d" -maxdepth 2 -type l \
-		-name 'rppocket-*' -print -quit | grep -q .; then
+	if find "$STORE_MNT/.config" -maxdepth 3 \
+		-name 'rppocket-pm-*' -print -quit | grep -q .; then
+		echo "ERROR: an obsolete RPPocket PM harness file remains" >&2
+		exit 1
+	fi
+	if find "$STORE_MNT/.cache/log" -maxdepth 1 -type f \
+		-name 'rppocket-*.log' -print -quit | grep -q .; then
+		echo "ERROR: an RPPocket diagnostic log remains" >&2
+		exit 1
+	fi
+	if [[ -d "$STORE_MNT/.config/system.d" ]] &&
+		find "$STORE_MNT/.config/system.d" -maxdepth 2 -type l \
+			-name 'rppocket-*' -print -quit | grep -q .; then
 		echo "ERROR: an RPPocket test service link remains" >&2
 		exit 1
 	fi
@@ -2437,7 +1296,7 @@ rm -rf "$BOOT_MNT/pstore"
 sync
 umount "$BOOT_MNT"
 
-if (( PM_TEST_DEVICES || PM_TEST_DEVICES_NO_GPU || PM_FREEZE_NO_GPU || PM_FREEZE || PM_DEEP || POWER_SLIDER_TEST || POWER_SLIDER_LONG_TEST || POWER_SLIDER_RELIABILITY_TEST )); then
+if (( POWER_SLIDER_TEST || POWER_SLIDER_LONG_TEST || POWER_SLIDER_RELIABILITY_TEST )); then
 	echo ">>> PREPARED, NOT CLEARED TO BOOT: leave the card in this PC."
 	echo ">>> Tell the agent 'prepared' so the image and harness can be verified read-only."
 elif (( RELEASE )); then
@@ -2445,36 +1304,7 @@ elif (( RELEASE )); then
 else
 	echo ">>> OK. Insert SD into RPPocket and power on."
 fi
-if (( PM_TEST_DEVICES )); then
-	echo ">>> After verification: do not operate the slider; test starts after ~45 sec."
-	echo ">>> A blocked callback should panic after 20 sec and reboot 1 sec later."
-	echo ">>> After the UI returns, wait ~1 min, shut down from the menu,"
-	echo ">>> reinsert the SD, and tell the agent it is inserted."
-elif (( PM_TEST_DEVICES_NO_GPU )); then
-	echo ">>> This image intentionally has no GPU, so the UI may never appear."
-	echo ">>> Five rapid blue flashes prove the headless harness actually started."
-	echo ">>> If they are not seen within 30 sec, power off; do not continue waiting."
-	echo ">>> At ~45 sec, dim pulses continue the walk from the fixed RK817 callback."
-	echo ">>> When pulsing stops and blue stays solid for 30 sec, the blocker is named"
-	echo ">>> in the synced log. Shut down with the usual long hold and reinsert the SD."
-	echo ">>> If it flashes 3 times and powers off itself, simply reinsert the SD."
-elif (( PM_FREEZE_NO_GPU || PM_FREEZE )); then
-	if (( PM_FREEZE )); then
-		echo ">>> GPU startup runs first; five rapid blue flashes should appear within 90 sec."
-	else
-		echo ">>> Five rapid blue flashes prove startup; stop if absent within 30 sec."
-	fi
-	echo ">>> About 45 sec after those flashes, blue turns off immediately before real freeze."
-	echo ">>> Once it is off, use one short power-slider action to request wake."
-	echo ">>> Three flashes and automatic poweroff prove the state write returned."
-	echo ">>> Otherwise wait 2 min, force fully off, and reinsert the card."
-elif (( PM_DEEP )); then
-	echo ">>> GPU startup runs first; five rapid blue flashes should appear within 90 sec."
-	echo ">>> About 45 sec later, blue turns off immediately before deep mem suspend."
-	echo ">>> Once it is off, use one short power-slider action to request wake."
-	echo ">>> Three flashes and automatic poweroff prove deep mem returned."
-	echo ">>> Otherwise wait 2 min, force fully off, and reinsert the card."
-elif (( POWER_SLIDER_TEST )); then
+if (( POWER_SLIDER_TEST )); then
 	echo ">>> Five rapid blue flashes within 90 sec prove production policy is active."
 	echo ">>> Then perform only the separately requested short-action test."
 elif (( POWER_SLIDER_LONG_TEST )); then
@@ -2488,13 +1318,6 @@ elif (( RELEASE )); then
 else
 	echo ">>> Wait ~3 min (or until the blinking LED stops changing cadence),"
 	echo ">>> power off with a long press, pull the SD, and tell the agent it is inserted."
-fi
-if (( ! RELEASE )); then
-	if (( DWC2_REBIND )); then
-		echo ">>> Late hook will run the DWC2 unbind/rebind experiment."
-	else
-		echo ">>> Late hook will skip the DWC2 unbind/rebind experiment."
-	fi
 fi
 echo
 if (( FLASH )); then

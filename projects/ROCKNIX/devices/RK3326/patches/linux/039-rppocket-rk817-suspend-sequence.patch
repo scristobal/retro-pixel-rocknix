@@ -1,3 +1,19 @@
+From: FunnyPlaying RetroPixel Pocket port
+Subject: [PATCH] mfd: rk8xx: sequence RK817 sleep pin safely
+
+Selecting the SoC sleep mux while the RK817 sleep pin retains its active-low
+polarity can assert PMIC sleep in the middle of the device suspend callback.
+The RPPocket then hangs inside rk8xx_suspend() and never reaches firmware.
+
+Match the vendor RK817 ordering: make the PMIC sleep function inert, set the
+sleep polarity, then select the SoC pinctrl state. Restore null function and
+active-low polarity before selecting the reset state on resume. Boards without
+these pinctrl states retain the existing mainline path.
+
+---
+ drivers/mfd/rk8xx-core.c | 58 ++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 44 insertions(+), 14 deletions(-)
+
 --- a/drivers/mfd/rk8xx-core.c
 +++ b/drivers/mfd/rk8xx-core.c
 @@ -913,15 +913,33 @@

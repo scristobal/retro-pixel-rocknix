@@ -74,28 +74,6 @@ mkimage_dtb() {
   echo "image: copying device trees..."
   case "$DEVICE" in
     RK3326)
-      # FunnyPlaying RetroPixel Pocket (and any other RK3326 device whose
-      # ADC value is not recognised by the Hardkernel/Odroid u-boot-legacy
-      # `hwrev` command at cmd/hwrev.c): hwrev falls through to its
-      # "engineer sample" default of rk3326-odroidgo2-linux.dtb
-      # (or the v11 variant in the adjacent ADC range).  If no file by
-      # that exact name is on the FAT boot partition, legacy u-boot's
-      # fatload fails, it writes "dtb load fail" to /error.log and
-      # enters odroid_alert_leds() — the "two blinks then pause" pattern
-      # visible on the PCB LED — never handing off to mainline u-boot.
-      #
-      # Drop copies of rk3326-anbernic-rg351m.dtb under both fallback
-      # names.  Legacy u-boot only uses this DTB for its own hardware
-      # enumeration (MMC / UART / PMIC); the kernel uses whatever
-      # extlinux.conf points FDT at.  RG351M is a safe base for
-      # RG351M-class hardware.
-      local DT_SRC="${RELEASE_DIR}/3rdparty/bootloader/device_trees"
-      if [ -f "${DT_SRC}/rk3326-anbernic-rg351m.dtb" ]; then
-        cp "${DT_SRC}/rk3326-anbernic-rg351m.dtb" \
-           "${DT_SRC}/rk3326-odroidgo2-linux.dtb"
-        cp "${DT_SRC}/rk3326-anbernic-rg351m.dtb" \
-           "${DT_SRC}/rk3326-odroidgo2-linux-v11.dtb"
-      fi
       mcopy "${RELEASE_DIR}/3rdparty/bootloader/device_trees/"*.dtb ::
       mcopy "${RELEASE_DIR}/3rdparty/bootloader/stock" ::
       mcopy "${RELEASE_DIR}/3rdparty/bootloader/overlays" ::

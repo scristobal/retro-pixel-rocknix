@@ -1,0 +1,251 @@
+024 - RPPocket upstream-diff production audit
+==============================================
+
+Purpose
+-------
+Audit the complete topic-branch delta from its upstream merge base
+cf5767ee0ae6ce7b9c1850ce3ecc7dad1888644b. Remove obsolete bring-up
+instrumentation, misleading candidate metadata, unused hardware descriptions,
+and unrelated changes without discarding validated RPPocket support or the
+historical evidence under debug/.
+
+Scope reviewed
+--------------
+Production and packaging files:
+
+* ROCKNIX device registration and both U-Boot selection paths;
+* the complete RPPocket DTS and RK3326 kernel configuration delta;
+* panel, USB2 PHY, DWC2, RK817, firmware-policy, power-domain, and Mali patches;
+* controller databases and RetroArch profile;
+* RPPocket audio, volume, logind, backlight, and suspend-inhibitor quirks;
+* the RenderDoc dependency adjustment needed to build the refreshed upstream
+  baseline.
+
+Repository support files:
+
+* AGENTS.md;
+* debug/001 through debug/023 and debug/current_state.txt;
+* debug/pre.sh, register-diff.sh, the stock-image oracle helper, and retained
+  stock/ROCKNIX evidence captures.
+
+Findings and changes
+--------------------
+
+1. RPPDBG and panel lifecycle logging were obsolete.
+
+   Removed the two instrumentation-only kernel patches that traced DWC2 and
+   USB2PHY state, and removed unconditional panel prepare/unprepare/probe/remove
+   dev_info() messages. Normal error reporting remains.
+
+2. Two USB changes had production behavior hidden behind experiment names.
+
+   Renamed and rewrote their metadata as the stock DWC2 TOUTCAL quirk and the
+   stock USB2PHY power-on sequence. Both remain narrowly RPPocket-scoped and
+   retain behavior already exercised across cold boot and repeated DWC2
+   unload/reload suspend cycles. The source-backed RK3328 PHY tuning remains and
+   composes with the upstream-refresh PX30S tuning callback.
+
+3. Temporary DWC2 host-only policy was still present.
+
+   Kept DWC2 modular for the validated sleep-hook unload/reload path, but
+   restored the kernel's normal dual-role configuration. The RPPocket DTS still
+   selects its working controller topology.
+
+4. Unvalidated input mappings were exposed.
+
+   Removed the PA0/PA1/PB2 brightness entries and gpio3 PB7 centre-button entry.
+   They had produced no useful action. The validated twelve game controls and
+   gpio3 PD3/PC4 volume up/down keys remain.
+
+5. RK817 support exposed unused bring-up GPIOs.
+
+   Reduced patch 028 and the DTS to the SLP pin states actually required by the
+   validated suspend sequence. Removed unused TS/GT GPIO muxes, the unused PMIC
+   power-off pinctrl state, and the RK817 GPIO-controller exposure. Added managed
+   cleanup for the vendor-derived pinctrl child device. Suspend/reset states and
+   patch 039's validated polarity ordering remain unchanged.
+
+6. Obsolete active diagnostic workflows remained in debug/pre.sh.
+
+   Removed callback-walker, pm_test, freeze, deep-suspend, watchdog/ramoops,
+   DWC2-rebind, stock-init, and GPIO-scan modes and generated services/scripts.
+   Release mode now also removes artifacts left by those historical versions.
+   The current power-slider regression modes, generic broad capture, stock-image
+   oracle, ROM/PICO-8 installation, and --release mode remain. Historical
+   decision logs and captured evidence remain intentionally.
+
+7. Release and inhibitor cleanup needed hardening.
+
+   Release mode now removes all persisted rppocket-*.log captures and obsolete
+   PM harness files. The suspend inhibitor removes a stale PID file safely and
+   signals an old process only when both its comm and --who=rppocket-sleep
+   command-line identity match.
+
+8. Unrelated branch changes existed.
+
+   Restored .gitignore and projects/ROCKNIX/bootloader/mkimage to the upstream
+   versions and removed the obsolete SDWire helper. SDWire is prohibited by the
+   project workflow.
+
+9. Patch descriptions and active state documentation were stale.
+
+   Removed candidate/temporary wording, stale statistics, old timestamps,
+   malformed mail footers, and the pre-validation warning from the validated
+   firmware-policy patch. Updated current_state.txt and release documentation.
+
+Intentionally retained
+----------------------
+
+* The exact stock BL31 rockchip,sleep-debug-en=<1> setting remains for this
+  gate. It is a firmware policy value from the compiled factory DTB, not an
+  RPPDBG kernel trace. Changing it is a separate hardware-facing variable and
+  must be tested only after this cleanup candidate passes.
+* GPIO3_PC2 output-low remains because the factory init explicitly establishes
+  that state and every validated production image retained it.
+* CONFIG_RTL8XXXU_UNTESTED=y remains because that Kconfig gate is required for
+  the hardware-validated RTL8188EUS driver path; "UNTESTED" is the upstream
+  symbol name, not the status of this port.
+* Standard RK3326 ROCKNIX options such as CONFIG_PM_DEBUG, CONFIG_PM_SLEEP_DEBUG,
+  CONFIG_DYNAMIC_DEBUG, CONFIG_DEBUG_FS, CONFIG_PSTORE_RAM, and the upstream
+  debug-package selection were already present at the merge base. This audit
+  does not create a board-local kernel configuration fork merely to remove
+  shared facilities.
+* The RenderDoc xcb-util-keysyms dependency remains because it fixes a real
+  dependency omission encountered while building the refreshed upstream tree;
+  it does not add RenderDoc to an image that upstream would not otherwise build.
+* Numbered decision logs, stock/ROCKNIX captures, register-diff.sh, and the stock
+  custom_start oracle are evidence and development tools, not shipped runtime
+  hooks. --release removes writable-card diagnostics.
+
+Build and static verification
+-----------------------------
+
+`make docker-RK3326` completed successfully after the final patch/DTS trim.
+
+Candidate artifacts:
+
+    image A SHA-256 5efc5facb79f5d39ba0cbed6e1b5584c6bafcebf4d73a78ce8160c96557cf164
+    image B SHA-256 3ecbd2f84f1058d21662d8faaf32def17cb590c05bb1332997cb8a4aa9c45705
+    KERNEL  SHA-256 eb3e968c12ca6792c40e2442add16746b7365c6e61197777247a3f3723e86662
+    SYSTEM  SHA-256 4d704d60ddcb89b5a3cee8277df4419c2078ebd80bd8457969bbd076dae85f6c
+    DTB     SHA-256 233b79d6ad75af45df4e0b0dbd15e11c174a9e4dc6c99e1c6b11025ed50adfa2
+
+Verified in generated sources and artifacts:
+
+* no RPPDBG strings or panel lifecycle messages;
+* no callback-walker controls, RPPocket watchdog hooks, or DPM watchdog config;
+* no obsolete debug/candidate patch paths;
+* DWC2 is modular with CONFIG_USB_DWC2_DUAL_ROLE=y and debug disabled;
+* the DTB contains only the validated volume up/down rocker additions;
+* the RK817 child contains only pmic-sleep and pmic-reset states, with no TS/GT
+  pins, GPIO-controller declaration, or pmic-power-off state;
+* the packaged RPPocket quirks are present and no obsolete harness is shipped;
+* the DTB extracted from image A is byte-identical to the generated DTB.
+
+Bash syntax checks passed for pre.sh, every generated shell heredoc, and all
+RPPocket quirk scripts. Mocks passed for release cleanup and unrelated-file
+preservation, fast-backlight zero/resume/restore, obsolete option rejection,
+and stale inhibitor PID identity handling (an unrelated process was preserved;
+an exact RPPocket inhibitor was terminated).
+
+Pending hardware gate
+---------------------
+
+This candidate is built but not yet hardware-validated. Do not commit it yet.
+Prepare a production-clean card with:
+
+    sudo debug/pre.sh --flash --release /dev/sdb
+
+Before flashing, verify the image path still hashes to the image-A value above.
+Then perform one focused regression pass:
+
+1. cold boot to the normal UI;
+2. confirm display, controls, volume up/down, audio, and Wi-Fi;
+3. perform one short slider suspend/resume and confirm full backlight-off,
+   successful wake, restored Wi-Fi, and no immediate suspend replay;
+4. perform the normal approximately five-second orderly poweroff to finish.
+
+After reinserting the card, inspect it directly before accepting the candidate.
+Only after this gate passes should rockchip,sleep-debug-en be considered as a
+separate isolated firmware-policy cleanup.
+
+Cleanup-candidate hardware result
+---------------------------------
+
+The prepared card was independently mounted read-only before boot. KERNEL,
+SYSTEM, and DTB matched the hashes above; all embedded MD5 declarations also
+matched. STORAGE had no debug hook, experiment marker, service, symlink,
+persistent journal, capture, or pstore artifact. The card was safely unmounted
+before authorization.
+
+The user then confirmed that cold boot, display, controls, volume, audio,
+Wi-Fi, one short suspend/resume cycle, full backlight-off, wake, Wi-Fi restore,
+and orderly long-press poweroff all worked normally.
+
+The returned card again had the exact KERNEL/SYSTEM/DTB hashes. First-boot
+resize completed, user content remained present, and no RPPocket diagnostic,
+test-service, capture, or pstore artifact appeared. ROCKNIX recreated an empty
+standard `.cache/log/journal` directory, but no journal files or persistent
+logging marker/configuration existed. The card was safely unmounted.
+
+Decision:
+
+    Accept the broad production-cleanup candidate as the new hardware baseline.
+    Proceed with exactly one additional hardware-facing variable: change the
+    RPPocket BL31 sleep-debug control from the stock value 1 to explicit 0.
+
+Isolated BL31 debug-disable build
+---------------------------------
+
+Changed only the RPPocket `rockchip,sleep-debug-en` value from 1 to 0. The
+validated sleep-mode (`0x20702`) and wake-source (`0x85`) values are unchanged.
+`make docker-RK3326` completed successfully.
+
+Candidate artifacts:
+
+    image A SHA-256 b2bd07f88fbd9f507ae44f9fb2ac9c61467d306a35ba7687cfaad92a7eba39a4
+    image B SHA-256 52a3151b323fac23ec9a50722487f40342ebe54237b284381361cba3d56b713d
+    KERNEL  SHA-256 fce7303c0bbe4c70212eaa6333805b1c5bce83296851fac91deb60c0c5048b42
+    SYSTEM  SHA-256 53900cd62f8f5b8100d7869c235fc9097f6fcc645bcd9bfcb0c9f36b01fc55e9
+    DTB     SHA-256 c2ef19005874e46c03db5f6339f1100e333882b2515461017f994622c8024da4
+
+The generated and image-extracted DTBs are byte-identical and decompile to:
+
+    rockchip,sleep-debug-en = <0>;
+    rockchip,sleep-mode-config = <0x20702>;
+    rockchip,wakeup-config = <0x85>;
+
+No RPPDBG, panel lifecycle trace, callback-walker, or other removed diagnostic
+string reappeared.
+
+Isolated BL31 debug-disable result
+----------------------------------
+
+The prepared card was verified read-only before boot: all payload hashes and
+DTB values matched, release storage was clean, and user content was intact. The
+user confirmed that the release build worked, including the requested cold
+boot, short deep suspend/resume, backlight-off/wake behavior, Wi-Fi restoration,
+and orderly poweroff checks.
+
+The returned card again had the exact KERNEL/SYSTEM/DTB hashes above. First-boot
+resize completed, the NetworkManager profile persisted with mode 0600, and no
+RPPocket diagnostic, persistent capture, boot capture, or pstore artifact was
+present. The card was safely unmounted.
+
+Decision:
+
+    Accept explicit rockchip,sleep-debug-en = <0> for production. The isolated
+    firmware-policy cleanup passed, so the audited production image is hardware
+    validated.
+
+Final pre-commit review
+-----------------------
+
+The complete image build, compiled-DTB inspection, packaged-artifact scan, shell
+syntax checks, release mocks, real release-card checks, and both hardware gates
+passed. Initial `git diff --check` warnings were nested-diff representation
+warnings: the outer Git diff saw newly introduced context prefixes followed by
+source tabs. The added RK817 edits were split into zero-context nested hunks,
+then the complete patch passed a reverse/forward round trip with zero fuzz and
+byte-identical output. Final staged diff checking with the two renamed USB
+patches detected at 20% similarity is clean.

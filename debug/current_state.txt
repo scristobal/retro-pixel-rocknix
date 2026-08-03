@@ -1,9 +1,12 @@
 CURRENT STATE
 ==============================================================
 As of: 2026-08-03
-Build: target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+Last hardware-validated image SHA-256:
+       b2bd07f88fbd9f507ae44f9fb2ac9c61467d306a35ba7687cfaad92a7eba39a4
+The production-diff audit and isolated BL31 debug disable passed; see
+       debug/024-upstream-diff-audit.txt
 Branch: retropixel-pocket-support
-HEAD : rppocket: refresh upstream baseline
+Status: production-diff audit hardware-validated; see git log for current HEAD
 
 Git branch layout
 -----------------
@@ -120,8 +123,8 @@ Stuff that works
        HIGH as "wifi-vcc-en" in rk3326-funnyplaying-rppocket.dts,
        enabling the YJ33/RTL8188EUS 3.3V rail.  The compiled DTB also
        holds GPIO3_PC2 LOW as "stock-gpio114" to match stock init.
-       User confirmed the production DTS image boots without the
-       --stock-init-gpio1 debug hook, connects to a local Wi-Fi
+       User confirmed the production DTS image boots with the GPIO state
+       supplied entirely by the board description, connects to a local Wi-Fi
        network, and runs Pico-8 Splore successfully.
 [OK]   ROCKNIX device-quirks system applies the FunnyPlaying-specific
        audio routing (Playback Mux SPK -> HP swap) and the 100%
@@ -134,7 +137,7 @@ Stuff that works
        standard ROCKNIX sleep hooks. RPPocket logind policy uses native actions:
            short press = suspend
            five-second hold = orderly poweroff
-       A temporary block inhibitor spans suspend and the first five seconds of
+       A short-lived block inhibitor spans suspend and the first five seconds of
        resume so the wake key cannot replay into another suspend. The backlight
        2.8 V regulator now follows stock constraints and turns fully off in
        suspend, restoring the prior brightness on resume. An RPPocket-only
@@ -151,19 +154,19 @@ Stuff that works
        shutdown hook. No PM, RK817, I2C, GPU-clock, panic, watchdog, or pstore
        failures were present. See debug/022-power-slider-plan.txt.
 
-       Validated image and boot artifacts:
+       Validated image and boot artifact identities (the local target filename
+       is reused by later builds, so verify its hash before flashing):
            target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
            image  sha256 0a4f2782937ce588b73110886bff5f2fc2cff15a3c0a292546e4372d9883a32b
            KERNEL sha256 7b3dde04db47b0741797f1e37a6c848ed240a28cc309af54b95b1c0fd9c9bdb3
            SYSTEM sha256 c43da589e834972beac70fa79e1a97a6952c7ece3f2e481aaf4935be19c55d06
            DTB    sha256 7bc14101de7ddce861cd2e829a594156d37d655c9fcf3a7137c64328d4f8f450
-[OK]   Physical volume rocker up/down works.  The vendor RPPocket DTS
-       carries these pins in a commented rg351-keys node:
+[OK]   Physical volume rocker up/down works:
            gpio3 PD3 = KEY_VOLUMEUP
            gpio3 PC4 = KEY_VOLUMEDOWN
-       A rebuilt/flashed image using those pins was confirmed by the
-       user.  Mounted boot logs from that image show the gpio-keys lines
-       registered as VOL-UP on gpio3 PD3 and VOL-DOWN on gpio3 PC4.
+       A rebuilt/flashed image using those vendor-defined pins was confirmed by
+       the user. Mounted boot logs show the gpio-keys lines registered as
+       VOL-UP on gpio3 PD3 and VOL-DOWN on gpio3 PC4.
 [OK]   RetroArch/libretro input is playable with the gpio-keys
        autoconfig.  EmulationStation sees the built-in controls and
        D-pad works in-menu.  /proc/bus/input/devices shows the
@@ -173,9 +176,7 @@ Stuff that works
            0 B, 1 A, 2 Y, 3 X, 4 L, 5 R,
            6 SELECT, 7 START,
            8 UP, 9 DOWN, 10 LEFT, 11 RIGHT
-       Game Boy is confirmed playable.  The remaining missing pieces
-       are brightness/contrast rocker control and volume rocker centre
-       press.
+       Game Boy is confirmed playable.
 
 Stuff that's broken or unfinished
 ---------------------------------
@@ -188,18 +189,12 @@ Stuff that's broken or unfinished
        baseline test; do not claim it was restored without checking the
        mounted STORAGE partition.
 
-[BUG]  Brightness rocker has no visible action.  The latest known
-       working image maps the observed PA0/PA1/PB2 contact group to
-       BRIGHTNESS-UP / BRIGHTNESS-DOWN / BRIGHTNESS-CLICK, but the
-       user confirmed it does not change brightness.  The original
-       RPPOCKET userspace implements brightness as Fn + volume, with
-       Fn on BTN_TRIGGER_HAPPY4 / gpio2 PA4; PA4 has not fired in our
-       captures.  No clear vendor path for a direct brightness rocker
-       has been found.
-
-[TODO] Volume centre press is registered as gpio3 PB7 /
-       BTN_TRIGGER_HAPPY1 but has no visible action.  This is expected
-       for now because ROCKNIX does not bind it to a user action.
+[TODO] Brightness controls and the volume-rocker centre press are not mapped.
+       Experimental PA0/PA1/PB2 brightness keys and gpio3 PB7 centre-button
+       mappings produced no validated action and have been removed from the
+       production DTS. The original RPPocket userspace implements brightness
+       as Fn + volume, with Fn on BTN_TRIGGER_HAPPY4 / gpio2 PA4; PA4 has not
+       fired in our captures.
 
 [TODO] Battery LED.  The 001-device_config quirk sets
        DEVICE_BATTERY_LED_STATUS="false" because the LED behaviour
@@ -227,19 +222,18 @@ Open questions
 
 How to resume work
 ------------------
-1.  Restore the verified local PICO-8 archive after the user reinserts
-    the refreshed SD card.  Mount STORAGE read/write, restore the full
-    games-internal/roms/pico-8 tree with numeric ownership, verify key
-    files, sync, and unmount.
-2.  Power-slider work is accepted. Keep debug/022-power-slider-plan.txt
-    as the evidence and decision log; do not restore rejected wake-IRQ or
-    temporary PM diagnostic patches.
-3.  If brightness is revisited, decide whether to add a ROCKNIX
-    userspace binding for PA0/PA1/PB2 or keep the vendor-style
-    Fn + volume model and investigate why gpio2 PA4 has not fired.
-4.  Keep commits on retropixel-pocket-support.  Rebase or merge over
-    upstream/next when needed, then push the topic branch to origin
-    and clean up the commit log if helpful for a future upstream PR.
+1.  Treat the production-diff audit in debug/024-upstream-diff-audit.txt and
+    image SHA-256 above as the accepted hardware baseline.
+2.  Use `debug/pre.sh --flash --release --preserve-wifi /dev/sdX` when another
+    boot-critical build must be flashed without re-entering saved Wi-Fi keys.
+3.  Power-slider work is accepted. Keep debug/022-power-slider-plan.txt as the
+    evidence and decision log; do not restore rejected wake-IRQ or temporary PM
+    diagnostic patches.
+4.  If brightness is revisited, follow the vendor-style Fn + volume model and
+    investigate why gpio2 PA4 has not fired before adding another key mapping.
+5.  Keep commits on retropixel-pocket-support. Rebase or merge over
+    upstream/next when needed, then push the topic branch to origin and clean up
+    the commit log if helpful for a future upstream PR.
 
 Don't reinvent
 --------------

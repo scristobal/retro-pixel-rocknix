@@ -1,4 +1,5 @@
-midgard: balance runtime PM clock ownership
+From: FunnyPlaying RetroPixel Pocket port
+Subject: [PATCH] midgard: balance runtime PM clock ownership
 
 The generic devicetree runtime-PM callbacks use __clk_is_enabled() to decide
 whether Mali should acquire or release its clock. That helper reports the

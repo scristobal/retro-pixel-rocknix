@@ -11,7 +11,17 @@ PIDFILE=${RUNDIR}/pid
 mkdir -p "$RUNDIR"
 if [ -r "$PIDFILE" ]; then
 	old_pid="$(cat "$PIDFILE" 2>/dev/null)"
-	[ -z "$old_pid" ] || kill "$old_pid" 2>/dev/null || true
+	case "$old_pid" in
+		''|*[!0-9]*) ;;
+		*)
+			# Never signal a recycled PID or an unrelated systemd-inhibit.
+			if [ "$(cat "/proc/$old_pid/comm" 2>/dev/null)" = systemd-inhibit ] &&
+			   tr '\000' '\n' <"/proc/$old_pid/cmdline" 2>/dev/null |
+				grep -Fxq -- '--who=rppocket-sleep'; then
+				kill "$old_pid" 2>/dev/null || true
+			fi
+			;;
+	esac
 fi
 rm -f "$READY" "$RELEASE" "$PIDFILE"
 
@@ -22,7 +32,15 @@ systemd-inhibit --what=handle-power-key --mode=block \
 	sh -c '
 		ready=$1
 		release=$2
-		trap '\''rm -f "$ready" "$release"'\'' EXIT
+		pidfile=$3
+		owner_pid=$PPID
+		cleanup() {
+			rm -f "$ready" "$release"
+			if [ "$(cat "$pidfile" 2>/dev/null)" = "$owner_pid" ]; then
+				rm -f "$pidfile"
+			fi
+		}
+		trap cleanup EXIT
 		: >"$ready"
 
 		# Normally the post hook releases us immediately after resume. The
@@ -37,7 +55,7 @@ systemd-inhibit --what=handle-power-key --mode=block \
 		# Keep the inhibitor briefly after post hooks begin so the queued key
 		# release cannot trigger another suspend while resume is unwinding.
 		sleep 5
-	' sh "$READY" "$RELEASE" >/dev/null 2>&1 &
+	' sh "$READY" "$RELEASE" "$PIDFILE" >/dev/null 2>&1 &
 echo $! >"$PIDFILE"
 
 # Do not enter suspend until the low-level inhibitor has been acquired.

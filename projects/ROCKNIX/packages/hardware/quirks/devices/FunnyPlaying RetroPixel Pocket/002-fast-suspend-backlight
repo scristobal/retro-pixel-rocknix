@@ -18,9 +18,9 @@ restore_backlight() {
 }
 trap restore_backlight EXIT HUP INT TERM
 
-for candidate in /sys/class/backlight/*/brightness; do
-	if [ -r "$candidate" ] && [ -w "$candidate" ]; then
-		brightness_path=$candidate
+for path in /sys/class/backlight/*/brightness; do
+	if [ -r "$path" ] && [ -w "$path" ]; then
+		brightness_path=$path
 		break
 	fi
 done

@@ -12,6 +12,18 @@ Use the generic release mode for the final card:
 
     sudo debug/pre.sh --flash --release /dev/sdX
 
+A destructive flash normally erases saved Wi-Fi credentials with the rest of
+STORAGE. During repeated development flashes, preserve NetworkManager keyfiles
+in root-only temporary memory and restore them to the new card with:
+
+    sudo debug/pre.sh --flash --release --preserve-wifi /dev/sdX
+
+`--preserve-wifi` requires `--flash`. It copies only regular files directly
+under NetworkManager's `system-connections` directory, ignores symlinks and
+subdirectories, restores profiles with mode 0600, verifies their contents and
+count, and removes the temporary RAM-backed copy on success, failure, or
+interruption. It reports and continues safely if the old card has no profiles.
+
 To clean an already-flashed card without rewriting the image:
 
     sudo debug/pre.sh --release /dev/sdX
@@ -26,17 +38,20 @@ configuration, ROMs, and licensed PICO-8 files when present. It removes only the
 extra bring-up state:
 
 * the broad RPPocket debug autostart hook;
-* DWC2 and stock-init experiment markers;
-* PM and power-slider test manifests, markers, services, and active links;
+* obsolete DWC2, stock-init, GPIO-scan, and PM experiment artifacts;
+* power-slider test manifests, markers, services, and active links;
 * the debug.rocknix marker;
 * the pre.sh persistent-journald override and captured journal directory;
+* persisted `rppocket-*.log` diagnostic captures;
 * generated boot-partition dmesg, journal, pstore, event, and error captures.
 
 The mode verifies the resulting absence of diagnostics before unmounting the
-card. It is intentionally incompatible with GPIO scans, stock-init emulation,
-`--no-dwc2-rebind`, and all PM/power-slider diagnostic modes. `--flash` and a
-block-device argument are the only optional companions expected for release
-use.
+card. It is intentionally incompatible with power-slider diagnostic modes.
+`--flash`, `--preserve-wifi`, and a block-device argument are the optional
+companions expected for release use. Resolved GPIO, DWC2-rebind, and
+callback-walker experiments
+have been removed from the active helper entirely and remain available only in
+git history and decision logs.
 
 This flag is not a runtime requirement and does not alter suspend behavior. It
 only controls what the repository's development helper leaves on writable
@@ -45,9 +60,25 @@ diagnostics to clean.
 
 Validation
 ----------
+The Wi-Fi preservation path was mock-tested with two profiles, including names
+containing spaces and non-ASCII text, plus an ignored symlink and nested file.
+It preserved and restored exactly the two regular profiles byte-for-byte with
+mode 0600. Argument tests reject `--preserve-wifi` without `--flash`. The
+RAM-backed temporary directory is covered by the existing EXIT cleanup trap.
+
+A real-card pre-flash inspection found one regular NetworkManager profile owned
+by root with mode 0600. After `--flash --preserve-wifi` completed, read-only
+inspection found exactly one nonempty regular profile, again root-owned with
+mode 0600. The image payloads were exact, the requested ordinary diagnostic
+mode was installed, and no `rppocket-wifi.*` temporary directory remained in
+`/dev/shm`. The script's privileged restore path had already compared the
+restored file byte-for-byte before reporting success. The user then confirmed
+that the first preserved-profile boot connected normally without asking for the
+Wi-Fi password, completing the hardware gate.
+
 The release cleanup block was mock-tested with populated diagnostic markers,
 services, links, persistent journal state, and an unrelated user file. All
 listed diagnostics were removed and the unrelated file remained. Bash syntax
 checking passed. Argument tests confirmed that `--release` and its legacy alias
-parse successfully, while combinations with PM or GPIO/DWC2 experiment options
-are rejected before any block device is touched.
+parse successfully, while combinations with active power-slider test modes are
+rejected before any block device is touched.

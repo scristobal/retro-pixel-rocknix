@@ -1,0 +1,30 @@
+From: FunnyPlaying RetroPixel Pocket port
+Subject: [PATCH] phy: rockchip-inno-usb2: preserve RPPocket power-on sequence
+
+The RPPocket stock USB2PHY driver clears phy_sus and waits for UTMI clock
+stability without resetting the PHY afterward. Mainline performs an additional
+reset that prevents the board's internal RTL8188EUS from reconnecting when DWC2
+is loaded after resume.
+
+Skip only that extra reset on the RPPocket. The stock-matched sequence has been
+validated across cold boot and repeated suspend/resume reload cycles.
+
+---
+ drivers/phy/rockchip/phy-rockchip-inno-usb2.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+--- a/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
++++ b/drivers/phy/rockchip/phy-rockchip-inno-usb2.c
+@@ -628,7 +628,10 @@ static int rockchip_usb2phy_power_on(struct phy *phy)
+ 	 * please keep the common_on_n 1'b0 to set these blocks
+ 	 * remain powered.
+ 	 */
+-	ret = rockchip_usb2phy_reset(rphy);
++	if (of_machine_is_compatible("funnyplaying,rppocket"))
++		ret = 0;
++	else
++		ret = rockchip_usb2phy_reset(rphy);
+ 	if (ret)
+ 		return ret;
+ 

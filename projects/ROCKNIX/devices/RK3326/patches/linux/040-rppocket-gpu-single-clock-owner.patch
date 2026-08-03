@@ -1,4 +1,5 @@
-soc: rockchip: leave RPPocket GPU device clock under Mali ownership
+From: FunnyPlaying RetroPixel Pocket port
+Subject: [PATCH] pmdomain: rockchip: leave RPPocket GPU clock to Mali
 
 Patch 024 excludes the PX30S GPU domain from GENPD_FLAG_PM_CLK because
 Rockchip genpd and mali_kbase otherwise both manage the GPU device's single

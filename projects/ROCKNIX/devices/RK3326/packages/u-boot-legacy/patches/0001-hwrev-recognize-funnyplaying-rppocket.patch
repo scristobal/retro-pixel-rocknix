@@ -2,7 +2,7 @@ From: FunnyPlaying RetroPixel Pocket port
 Subject: [PATCH] cmd/hwrev: recognize FunnyPlaying RetroPixel Pocket
 
 On RK3326 handhelds the Hardkernel-descended u-boot-legacy reads
-SARADC channel 0 during board bring-up and maps the raw value to
+SARADC channel 0 during board identification and maps the raw value to
 one of a small hard-coded list of known devices (Odroid GO 2/3,
 Anbernic RG351V, Gameconsole R33S, ...).  If the value doesn't
 match any known range it falls through to an 'engineer sample'
