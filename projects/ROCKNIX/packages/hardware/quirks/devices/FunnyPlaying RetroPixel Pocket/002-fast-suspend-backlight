@@ -1,0 +1,76 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Blank the RPPocket backlight as soon as systemd accepts a suspend request.
+# The normal sleep hooks need a few seconds to quiesce Wi-Fi and USB before the
+# kernel can enter deep sleep, so waiting for the panel's PM callback makes a
+# short press feel unnecessarily slow.
+
+cat >/run/rppocket-fast-suspend-backlight <<'EOF'
+#!/bin/sh
+
+brightness_path=
+saved_brightness=
+
+restore_backlight() {
+	if [ -n "$brightness_path" ] && [ -n "$saved_brightness" ]; then
+		printf '%s\n' "$saved_brightness" >"$brightness_path" 2>/dev/null || true
+	fi
+}
+trap restore_backlight EXIT HUP INT TERM
+
+for candidate in /sys/class/backlight/*/brightness; do
+	if [ -r "$candidate" ] && [ -w "$candidate" ]; then
+		brightness_path=$candidate
+		break
+	fi
+done
+
+stats=/sys/power/suspend_stats/success
+if [ -z "$brightness_path" ] || [ ! -r "$stats" ]; then
+	systemd-notify --ready
+	exit 0
+fi
+
+saved_brightness="$(cat "$brightness_path")"
+suspend_success="$(cat "$stats")"
+printf '0\n' >"$brightness_path" || exit 1
+
+# Type=notify keeps sleep.target behind this point, guaranteeing that the
+# screen is already dark before the regular serial preparation starts.
+systemd-notify --ready || exit 1
+
+# This process is frozen with userspace. On resume the kernel increments the
+# success counter, then the thawed process restores the exact raw brightness
+# before the slower post-resume Wi-Fi and USB work completes. The bounded loop
+# also restores the light if a suspend attempt is aborted.
+count=0
+while [ "$count" -lt 300 ]; do
+	current_success="$(cat "$stats" 2>/dev/null)"
+	[ "$current_success" != "$suspend_success" ] && exit 0
+	sleep 0.05
+	count=$((count + 1))
+done
+
+exit 0
+EOF
+chmod +x /run/rppocket-fast-suspend-backlight
+
+mkdir -p /run/systemd/system/sleep.target.wants
+cat >/run/systemd/system/rppocket-fast-suspend-backlight.service <<'EOF'
+[Unit]
+Description=Blank RPPocket backlight before suspend preparation
+Before=sleep.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStart=/run/rppocket-fast-suspend-backlight
+RuntimeMaxSec=20
+TimeoutStopSec=2
+
+[Install]
+WantedBy=sleep.target
+EOF
+ln -sf ../rppocket-fast-suspend-backlight.service \
+	/run/systemd/system/sleep.target.wants/rppocket-fast-suspend-backlight.service
+systemctl daemon-reload

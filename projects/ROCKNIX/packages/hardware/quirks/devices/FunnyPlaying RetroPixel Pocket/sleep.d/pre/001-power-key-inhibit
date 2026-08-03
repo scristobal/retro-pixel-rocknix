@@ -1,0 +1,48 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Prevent the power-key event that wakes the RPPocket from immediately being
+# handled by logind as a second short-press suspend request.
+
+RUNDIR=/run/rppocket-power-key-wake
+READY=${RUNDIR}/ready
+RELEASE=${RUNDIR}/release
+PIDFILE=${RUNDIR}/pid
+
+mkdir -p "$RUNDIR"
+if [ -r "$PIDFILE" ]; then
+	old_pid="$(cat "$PIDFILE" 2>/dev/null)"
+	[ -z "$old_pid" ] || kill "$old_pid" 2>/dev/null || true
+fi
+rm -f "$READY" "$RELEASE" "$PIDFILE"
+
+command -v systemd-inhibit >/dev/null 2>&1 || exit 0
+
+systemd-inhibit --what=handle-power-key --mode=block \
+	--who=rppocket-sleep --why='ignore the power-key wake event' \
+	sh -c '
+		ready=$1
+		release=$2
+		trap '\''rm -f "$ready" "$release"'\'' EXIT
+		: >"$ready"
+
+		# Normally the post hook releases us immediately after resume. The
+		# timeout prevents a failed suspend from leaving power-key handling
+		# inhibited indefinitely.
+		count=0
+		while [ ! -e "$release" ] && [ "$count" -lt 1200 ]; do
+			sleep 0.1
+			count=$((count + 1))
+		done
+
+		# Keep the inhibitor briefly after post hooks begin so the queued key
+		# release cannot trigger another suspend while resume is unwinding.
+		sleep 5
+	' sh "$READY" "$RELEASE" >/dev/null 2>&1 &
+echo $! >"$PIDFILE"
+
+# Do not enter suspend until the low-level inhibitor has been acquired.
+count=0
+while [ ! -e "$READY" ] && [ "$count" -lt 20 ]; do
+	sleep 0.05
+	count=$((count + 1))
+done

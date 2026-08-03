@@ -26,6 +26,18 @@
 		stdout-path = "serial2:115200n8";
 	};
 
+	/*
+	 * Values from the compiled v1.1.3 stock RPPocket devicetree. The
+	 * rockchip-pm-config driver forwards them to BL31 for deep suspend.
+	 */
+	rockchip_suspend: rockchip-suspend {
+		compatible = "rockchip,pm-px30";
+		status = "okay";
+		rockchip,sleep-debug-en = <1>;
+		rockchip,sleep-mode-config = <0x20702>;
+		rockchip,wakeup-config = <0x85>;
+	};
+
 	battery: battery {
 		compatible = "simple-battery";
 		charge-full-design-microamp-hours = <3000000>;
@@ -451,8 +463,6 @@
 				regulator-name = "backlight2v8_supply";
 				regulator-min-microvolt = <2800000>;
 				regulator-max-microvolt = <2800000>;
-				regulator-always-on;
-				regulator-boot-on;
 
 				regulator-state-mem {
 					regulator-off-in-suspend;

@@ -1,0 +1,78 @@
+--- a/drivers/mfd/rk8xx-core.c
++++ b/drivers/mfd/rk8xx-core.c
+@@ -913,15 +913,33 @@
+ 		break;
+ 	case RK809_ID:
+ 	case RK817_ID:
+-		ret = regmap_update_bits(rk808->regmap,
+-					 RK817_SYS_CFG(3),
+-					 RK817_SLPPIN_FUNC_MSK,
+-					 SLPPIN_SLP_FUN);
+-		if (ret)
+-			break;
+-		if (rk808->pins && rk808->pins->p && rk808->pins->sleep)
++		if (rk808->pins && rk808->pins->p && rk808->pins->sleep) {
++			/*
++			 * Keep the external sleep signal inactive while changing
++			 * the SoC and PMIC pinmuxes.  This is the sequence used by
++			 * the RK817 vendor driver; selecting the SoC sleep mux while
++			 * the PMIC is configured active-low can assert sleep here.
++			 */
++			ret = regmap_update_bits(rk808->regmap,
++						 RK817_SYS_CFG(3),
++						 RK817_SLPPIN_FUNC_MSK,
++						 SLPPIN_NULL_FUN);
++			if (ret)
++				break;
++			ret = regmap_update_bits(rk808->regmap,
++						 RK817_SYS_CFG(3),
++						 RK817_SLPPOL_MSK,
++						 RK817_SLPPOL_H);
++			if (ret)
++				break;
+ 			ret = pinctrl_select_state(rk808->pins->p,
+ 						   rk808->pins->sleep);
++		} else {
++			ret = regmap_update_bits(rk808->regmap,
++						 RK817_SYS_CFG(3),
++						 RK817_SLPPIN_FUNC_MSK,
++						 SLPPIN_SLP_FUN);
++		}
+ 		break;
+ 	default:
+ 		break;
+@@ -939,15 +957,27 @@
+ 	switch (rk808->variant) {
+ 	case RK809_ID:
+ 	case RK817_ID:
+-		ret = regmap_update_bits(rk808->regmap,
+-					 RK817_SYS_CFG(3),
+-					 RK817_SLPPIN_FUNC_MSK,
+-					 SLPPIN_NULL_FUN);
+-		if (ret)
+-			break;
+-		if (rk808->pins && rk808->pins->p && rk808->pins->reset)
++		if (rk808->pins && rk808->pins->p && rk808->pins->reset) {
++			ret = regmap_update_bits(rk808->regmap,
++						 RK817_SYS_CFG(3),
++						 RK817_SLPPIN_FUNC_MSK,
++						 SLPPIN_NULL_FUN);
++			if (ret)
++				break;
++			ret = regmap_update_bits(rk808->regmap,
++						 RK817_SYS_CFG(3),
++						 RK817_SLPPOL_MSK,
++						 RK817_SLPPOL_L);
++			if (ret)
++				break;
+ 			ret = pinctrl_select_state(rk808->pins->p,
+ 						   rk808->pins->reset);
++		} else {
++			ret = regmap_update_bits(rk808->regmap,
++						 RK817_SYS_CFG(3),
++						 RK817_SLPPIN_FUNC_MSK,
++						 SLPPIN_NULL_FUN);
++		}
+ 		break;
+ 	default:
+ 		break;

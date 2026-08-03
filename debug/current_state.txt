@@ -1,7 +1,7 @@
 CURRENT STATE
 ==============================================================
-As of: 2026-08-02
-Build: target/ROCKNIX-RK3326.aarch64-20260802-a.img.gz
+As of: 2026-08-03
+Build: target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
 Branch: retropixel-pocket-support
 HEAD : rppocket: refresh upstream baseline
 
@@ -126,6 +126,37 @@ Stuff that works
 [OK]   ROCKNIX device-quirks system applies the FunnyPlaying-specific
        audio routing (Playback Mux SPK -> HP swap) and the 100%
        Master gain at boot.
+[OK]   The power slider has production suspend/resume and shutdown behavior.
+       The RK817 suspend pin is sequenced with the vendor polarity/pinctrl
+       ordering, BL31 receives the exact stock deep-suspend policy, and the
+       proprietary Mali driver owns a balanced GPU clock reference without
+       conflicting with genpd. DWC2 is modular and is unloaded/reloaded by the
+       standard ROCKNIX sleep hooks. RPPocket logind policy uses native actions:
+           short press = suspend
+           five-second hold = orderly poweroff
+       A temporary block inhibitor spans suspend and the first five seconds of
+       resume so the wake key cannot replay into another suspend. The backlight
+       2.8 V regulator now follows stock constraints and turns fully off in
+       suspend, restoring the prior brightness on resume. An RPPocket-only
+       service blanks the backlight before the slower Wi-Fi/USB preparation and
+       restores it immediately after kernel resume; hardware timing bounded
+       visible screen-off to 0.578 seconds after the physical key event and the
+       user reported that both screen-off and resume felt instant.
+
+       Hardware validation on the final image includes ten consecutive clean
+       deep suspend/resume cycles on one boot. All ten had complete systemd
+       pre/post traversal, CPU 1-3 offline/restart, display restore, DWC2
+       unload/reload, no wake replay, and user-confirmed full backlight-off.
+       Native long-press poweroff fired at 5.083 seconds and reached the orderly
+       shutdown hook. No PM, RK817, I2C, GPU-clock, panic, watchdog, or pstore
+       failures were present. See debug/022-power-slider-plan.txt.
+
+       Validated image and boot artifacts:
+           target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+           image  sha256 0a4f2782937ce588b73110886bff5f2fc2cff15a3c0a292546e4372d9883a32b
+           KERNEL sha256 7b3dde04db47b0741797f1e37a6c848ed240a28cc309af54b95b1c0fd9c9bdb3
+           SYSTEM sha256 c43da589e834972beac70fa79e1a97a6952c7ece3f2e481aaf4935be19c55d06
+           DTB    sha256 7bc14101de7ddce861cd2e829a594156d37d655c9fcf3a7137c64328d4f8f450
 [OK]   Physical volume rocker up/down works.  The vendor RPPocket DTS
        carries these pins in a commented rg351-keys node:
            gpio3 PD3 = KEY_VOLUMEUP
@@ -170,16 +201,6 @@ Stuff that's broken or unfinished
        BTN_TRIGGER_HAPPY1 but has no visible action.  This is expected
        for now because ROCKNIX does not bind it to a user action.
 
-[TODO] Power slider.  The hardware-side slider is wired through the
-       RK817 PMIC and exposed by the rk805-pwrkey input driver.  ROCKNIX
-       configures systemd-logind HandlePowerKey=suspend, but the built
-       6.12 driver does not call dev_pm_set_wake_irq() for the falling
-       power-key IRQ.  Baseline event timing, suspend entry, wake, long
-       hold shutdown, and cold power-up still need hardware
-       characterization.  Follow the staged plan in
-       debug/022-power-slider-plan.txt and preserve the PMIC emergency
-       cutoff path.
-
 [TODO] Battery LED.  The 001-device_config quirk sets
        DEVICE_BATTERY_LED_STATUS="false" because the LED behaviour
        on RPPocket has not been characterised.  The device has a
@@ -210,9 +231,9 @@ How to resume work
     the refreshed SD card.  Mount STORAGE read/write, restore the full
     games-internal/roms/pico-8 tree with numeric ownership, verify key
     files, sync, and unmount.
-2.  Start power-slider characterization from
-    debug/022-power-slider-plan.txt.  Do not combine wake-IRQ, suspend
-    firmware, and userspace timing changes in one hardware image.
+2.  Power-slider work is accepted. Keep debug/022-power-slider-plan.txt
+    as the evidence and decision log; do not restore rejected wake-IRQ or
+    temporary PM diagnostic patches.
 3.  If brightness is revisited, decide whether to add a ROCKNIX
     userspace binding for PA0/PA1/PB2 or keep the vendor-style
     Fn + volume model and investigate why gpio2 PA4 has not fired.

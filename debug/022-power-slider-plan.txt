@@ -6,156 +6,1570 @@ Goal
 Make the RPPocket power slider behave consistently across the complete
 power lifecycle:
 
-    - short slide/release while running: suspend
-    - slider action while suspended: wake and resume
+    - short slide/release while running: enter a low-power state quickly
+    - short slider action while suspended: wake and resume quickly
     - approximately 5 second hold while running: orderly poweroff
     - slider action while powered off: cold boot
-    - PMIC emergency cutoff remains available for a wedged system
+    - PMIC emergency cutoff/reset remains available for a wedged system
 
-Do not implement all of these paths at once. Separate input semantics,
-Linux suspend/wake, userspace policy, orderly shutdown, and PMIC hard
-cutoff so each hardware result identifies one failing layer.
+The immediate priority is reliable short-action suspend/resume. Do not
+combine input semantics, Linux suspend/wake, userspace policy, orderly
+shutdown, and PMIC hard cutoff in one hardware experiment.
 
 
 Known baseline
 --------------
-Hardware and kernel:
-
-    - The slider is exposed as "rk805 pwrkey" even though the board PMIC
-      is RK817; the shared driver reports KEY_POWER press/release IRQs.
-    - CONFIG_INPUT_RK805_PWRKEY=y and CONFIG_SUSPEND=y.
-    - The RPPocket RK817 node has wakeup-source and the default, sleep,
-      power-off, and reset pinctrl states.
-    - Suspend regulator states are present in the compiled DTB.
-    - The built Linux 6.12.79 rk805-pwrkey driver calls
-      device_init_wakeup(), but does not call dev_pm_set_wake_irq() for
-      its falling IRQ.
-    - RK3576 carries a small candidate patch that adds this wake-IRQ
-      binding. It is a reference, not proof that it fixes RPPocket.
-
-Userspace:
-
-    - ROCKNIX sets systemd-logind HandlePowerKey=suspend.
-    - ROCKNIX defaults RK3326 to mem suspend and runs its normal pre/post
-      sleep hooks around suspend.
-    - Long-hold behavior has not been characterized. It may be a second
-      software event, a PMIC timeout, or a hard cutoff independent of
-      Linux.
-
-Accepted baseline:
+Accepted ROCKNIX image:
 
     - target/ROCKNIX-RK3326.aarch64-20260802-a.img.gz
     - sha256 29aa4aa3c9d4dc99016c539ce1183e4b44fd9c06a887bb7d84310448a154b361
     - User confirmed this refreshed image works before power changes.
 
+Reported behavior on that baseline (2026-08-03):
 
-Phase 1 - Characterize current behavior without code changes
-------------------------------------------------------------
+    - the first short slider action after boot immediately blacks the screen
+    - later short slider actions do not visibly recover the device
+    - a very long hold eventually resets the device
+
+This proves that the running system sees enough of the first action to
+start its sleep policy. It does not yet prove whether the machine reaches
+deep suspend, fails before completing suspend, wakes with a dead display,
+or never receives a wake event. The very long action currently looks like
+the PMIC emergency path, not an orderly Linux reboot.
+
+ROCKNIX hardware/kernel facts:
+
+    - The slider is exposed as "rk805 pwrkey" even though the board PMIC
+      is RK817; the shared driver reports KEY_POWER press/release IRQs.
+    - CONFIG_INPUT_RK805_PWRKEY=y, CONFIG_SUSPEND=y, CONFIG_PM_DEBUG=y,
+      CONFIG_PM_SLEEP_DEBUG=y, and CONFIG_RTC_DRV_RK808=y.
+    - The RPPocket RK817 node has wakeup-source and the default, sleep,
+      power-off, and reset pinctrl states.
+    - Suspend regulator states are present in the compiled DTB.
+    - The built Linux 6.12.79 rk805-pwrkey driver calls
+      device_init_wakeup(), but does not assign its falling IRQ with
+      dev_pm_set_wake_irq(). The RK3576 tree carries a small candidate
+      patch that does so; it is a reference, not proof for RPPocket.
+    - The RK3326 kernel already builds
+      031-px30s-suspend-wakeup-config.patch and
+      CONFIG_ROCKCHIP_PM_CONFIG=y, but the current RPPocket DTS has no
+      rockchip-suspend node, so that driver has no RPPocket device to
+      probe and no RPPocket values to forward to BL31.
+
+ROCKNIX userspace facts:
+
+    - The built image sets systemd-logind HandlePowerKey=suspend.
+    - Common RK3326 autostart defaults system.suspendmode to mem and writes
+      SuspendState=mem standby freeze.
+    - input_sense also notices KEY_POWER and invokes rocknix-fake-suspend,
+      but fake suspend exits immediately whenever hardware suspend mode is
+      not "off". Therefore the current mem-mode blackout is not expected
+      to be the fake-suspend input-grab self-lockout.
+    - EmulationStation exposes Device Suspend Mode, so freeze/standby/mem
+      can be tested without rebuilding.
+    - systemd 255 already supports HandlePowerKeyLongPress=poweroff with a
+      five-second timer. When that differs from HandlePowerKey=suspend,
+      logind waits for release before treating an action as short. A custom
+      long-press daemon should not be the first implementation.
+
+Working-stock evidence:
+
+    - The actual v1.1.3 stock image's
+      rk3326-rppocket_v6_0-linux.dtb (SHA-256
+      cd12a289f64051f2b9f4b6654404fad4513252eea500553b8d5bc771f7d9d5f4)
+      contains an enabled rockchip-suspend node with:
+
+          compatible = "rockchip,pm-px30"
+          rockchip,sleep-debug-en = <1>
+          rockchip,sleep-mode-config = <0x20702>  (132866)
+          rockchip,wakeup-config = <0x85>         (133)
+
+      The mode enables ARM-off, PMU hardware PLL power-down, PMU-alive
+      32 kHz, oscillator disable, and PMIC low-power handling. The wake
+      mask enables cluster, GPIO, and USB wake.
+    - The stock rockchip_pm_config driver forwards those values to BL31
+      during probe. Its RPPocket rk8xx-pwrkey driver does not itself call
+      device_init_wakeup(), enable_irq_wake(), or dev_pm_set_wake_irq().
+    - This makes the missing stock-derived BL31 configuration a strong
+      candidate, but stock suspend/wake behavior must still be confirmed
+      on the device before calling it the root cause.
+
+
+2026-08-03 - Baseline failure log inspection
+--------------------------------------------
 Hypothesis:
-    The kernel already reports usable press/release events and enters
-    suspend; the first unknown is which layer fails during wake or a
-    long hold.
+    The first slider action reaches real mem suspend, while later actions
+    fail to wake it; the visible blackout is not ROCKNIX fake suspend.
 
-Capture on the accepted baseline:
+Inspection:
+    Mounted the returned 20260802 baseline card read-only. Its effective
+    configuration was:
 
-    - evtest timestamps for a quick slide/release and a 5+ second hold
-    - /proc/bus/input/devices identity for rk805 pwrkey
-    - /proc/interrupts before and after each action
-    - /sys/kernel/debug/wakeup_sources when available
+        system.suspendmode=mem
+        SuspendState=mem standby freeze
+
+    The card's compiled RPPocket DTB contains RK817 wakeup-source and all
+    PMIC pinctrl states, but no rockchip-suspend node.
+
+Observed result:
+    The persistent messages log contains four independent failure cycles.
+    At 14:51:49, 14:54:52, 15:18:57, and 17:35:52 it records:
+
+        input_sense: *(KEY_POWER), value 1: Pressed
+        rocknix-fake-suspend: Hardware suspend enabled, exiting
+        sleep: Preferring the active WIFI network on reconnect.
+        sleep: Disabling WIFI.
+        sleep: Input sense: stop
+        sleep: Power state: stop
+        sleep: Modules: stop
+
+    None of those cycles contains any ROCKNIX post-sleep action. Each is
+    followed by a fresh boot, respectively about 69 seconds, 64 seconds,
+    5 minutes 53 seconds, and 49 seconds later. This matches the user's
+    forced-reset recovery and rules out fake-suspend input grabbing as the
+    immediate failure. The readable syslog does not contain the final
+    kernel PM line, so it cannot distinguish a hang during late suspend
+    from successful deep entry with no wake IRQ.
+
+    /storage/.cache/log/sleep.log contains a harmless missing-glob error
+    for the absent FunnyPlaying sleep.d/pre quirk. The hook does not use
+    set -e and runs a successful touch after that call, so this is not an
+    explanation for the failed wake. No files on the card were changed.
+
+Decision / next step:
+    The userspace trigger path is proven. Test freeze on the unchanged
+    image next. A successful freeze wake will isolate the remaining issue
+    to mem/platform firmware and prioritize the stock rockchip-suspend
+    node; a failed freeze wake will prioritize pwrkey wake-IRQ wiring.
+
+
+2026-08-03 - Freeze wake test
+-----------------------------
+Hypothesis:
+    If the slider IRQ is already a valid wake source, suspend-to-idle
+    (freeze) should resume without depending on the missing BL31 deep-
+    suspend configuration.
+
+Change / requested test:
+    No image or boot artifact changed. The user selected Device Suspend
+    Mode = freeze, briefly operated the slider, waited, and operated it
+    again.
+
+Observed result:
+    The user reported that it did not wake. Card inspection confirms the
+    test actually used:
+
+        system.suspendmode=freeze
+        SuspendState=freeze standby mem
+
+    At 00:52:32 the persistent log records KEY_POWER and the complete
+    ROCKNIX pre-sleep sequence through "Modules: stop", but again has no
+    post-sleep sequence. The card was removed after recovery before a new
+    boot was logged.
+
+Decision / next step:
+    Failure in freeze makes the missing BL31 mem configuration an
+    insufficient explanation for this test and prioritizes Candidate B.
+    Build one isolated trial that assigns the rk805-pwrkey falling IRQ as
+    the device wake IRQ. Do not add the rockchip-suspend node to that
+    trial.
+
+
+2026-08-03 - Candidate B wake-IRQ trial build
+---------------------------------------------
+Hypothesis:
+    The RK817 power-key falling interrupt works while running but is not
+    enabled as a system wake interrupt. Assigning that nested interrupt as
+    the rk805-pwrkey device wake IRQ should allow the same slider action to
+    wake freeze.
+
+Change:
+    Added only:
+
+        projects/ROCKNIX/devices/RK3326/patches/linux/
+        035-rk805-pwrkey-enable-wakeup-irq.patch
+
+    It includes linux/pm_wakeirq.h and calls
+    dev_pm_set_wake_irq(&pdev->dev, fall_irq) after
+    device_init_wakeup(). A setup failure is warned about without removing
+    the otherwise working input device. No DTS, BL31 configuration, or
+    userspace power policy changed.
+
+Build / static verification:
+    make docker-RK3326 completed successfully. The applied 6.12.79 source
+    contains the call, rk805-pwrkey.o has an undefined reference resolved
+    by the built-in dev_pm_set_wake_irq symbol, and vmlinux contains both
+    the probe and diagnostic string. The compiled RPPocket DTB is unchanged
+    (SHA-256 ff9c5dc90fdb6dc25b077f3e28ac7ac6d44b4f7fc6251f5c2b2071d9f8ab6d9d)
+    and still has no rockchip-suspend node.
+
+Trial image:
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 237b97a74fde6b2a00b6bb0ffbcbe3b5c5a76d955efa4d92e17df54b877455b1
+
+Requested test:
+    Flash this image, explicitly select freeze, and try one short suspend
+    followed by one short wake. Do not test mem or long press until this
+    isolated wake-IRQ result is known.
+
+Observed result:
+    Failed. The user saw the screen go black, tried two or three short wake
+    actions without recovery, then tried a longer action with no visible
+    change. The returned card has the expected new KERNEL and unchanged DTB,
+    and confirms system.suspendmode=freeze. There is no "Can't set wake IRQ"
+    probe warning, so dev_pm_set_wake_irq() succeeded. At 01:07:35 the log
+    again ends after the full pre-sleep sequence and has no post-sleep
+    sequence. The card was removed without logging a subsequent boot.
+
+Decision / next step:
+    Reject Candidate B as a sufficient standalone fix; do not commit it.
+    Because even freeze plus a successfully assigned wake IRQ did not return,
+    first determine whether Linux can reverse its device-suspend phase at all.
+    Run a one-shot /sys/power/pm_test=devices suspend, which automatically
+    resumes after five seconds without requiring any hardware wake source.
+    If its post path runs, continue with a controlled RTC wake test; if it
+    does not, isolate the device suspend/resume hang before changing BL31.
+
+
+2026-08-03 - First pm_test=devices attempt was invalid
+-------------------------------------------------------
+Hypothesis:
+    A devices-level PM test should reverse itself after five seconds. If it
+    still leaves the panel black, the failure is in device suspend/resume
+    rather than hardware wake signaling.
+
+Requested test / visible result:
+    Installed a one-shot hook that selected pm_test=devices and requested
+    freeze through systemctl. The screen did not recover. A short action and
+    then a longer action had no visible effect. A later long action produced
+    a fresh boot at 01:21:25, after which the user shut down from the menu.
+
+Observed log result:
+    This test did not actually retain pm_test=devices until kernel suspend.
+    The hook selected devices at 01:18:28, but `systemctl suspend` returned
+    to the hook during that same second. The hook then captured its "after"
+    state and reset pm_test to none. ROCKNIX's pre-sleep hook did not begin
+    until 01:18:29. The device therefore entered the already-failing normal
+    freeze path, not the self-returning devices test.
+
+    The pre-attempt capture still confirms that the RK817 parent, rk805-
+    pwrkey child, and RK808 RTC child all expose power/wakeup=enabled. The
+    nested IRQs are present as IRQ 31 (fall), IRQ 32 (rise), and IRQ 36
+    (RTC), under GPIO parent IRQ 30.
+
+Decision / next step:
+    Do not treat the visible failure as a devices-stage result. Correct the
+    hook to keep pm_test=devices selected while writing `freeze` directly to
+    /sys/power/state. That write blocks until the kernel reverses the device
+    phase, avoiding systemctl's asynchronous ordering and all hardware wake
+    dependencies.
+
+
+2026-08-03 - Corrected pm_test=devices confirms a kernel device-stage hang
+---------------------------------------------------------------------------
+Requested test:
+    The corrected one-shot hook selected pm_test=devices and then executed the
+    blocking direct write `echo freeze > /sys/power/state`. The user reported
+    no visible recovery and reinserted the card after forcing recovery.
+
+Observed result:
+    `/storage/.cache/log/rppocket-pm-test-devices.log` reaches exactly:
+
+        === armed pm_test ===
+        none core processors platform [devices] freezer
+        === writing freeze to /sys/power/state ===
+        Mon Aug  3 01:31:09 EDT 2026
+
+    It contains neither `/sys/power/state returned` nor an `after` capture.
+    The one-shot marker was removed before the write, proving this is the
+    corrected direct test rather than the earlier systemctl race. The kernel
+    therefore blocks while suspending devices; no wake IRQ, BL31 deep-sleep
+    configuration, or physical wake action is needed to reverse this test
+    level. No pstore/ramoops record exists in this image.
+
+    The general debug hook's heavy delayed register/I2C capture was also
+    scheduled from the same 45-second offset as this one-shot. It had emitted
+    repeated ff190000 I2C STOP warnings before the sysfs write. The direct
+    result still proves the kernel path does not return, but the next run must
+    suppress that parallel capture so instrumentation cannot perturb the
+    callback being diagnosed.
+
+    Immediately before the test, Mali runtime PM had already warned in
+    `disable_gpu_power_control()`, followed by `clk_gpu already disabled` from
+    genpd's `pm_clk_suspend()`. The runtime clock tree is the normal PX30
+    topology and the boot SoC ID is 0x33260000, so `soc_is_px30s()` is false
+    and the existing PX30S-only GPU power-domain workaround is inactive.
+    This makes the GPU/genpd path a strong lead, but the warnings alone do not
+    prove which system-suspend callback blocks.
+
+Decision / next step:
+    Stop changing wake policy: the first failure is now below it. Roll back
+    the rejected pwrkey wake-IRQ trial and build a diagnostic kernel with the
+    existing upstream DPM watchdog enabled. Reserve a board-local 1 MiB
+    ramoops region so a callback exceeding 20 seconds panics with the exact
+    driver/device and leaves its stack for the next boot. Enable PM callback
+    timing in the one-shot hook, suppress the general broad capture for this
+    mode, and copy pstore records to the FAT partition before retesting the
+    same direct pm_test=devices operation. This is instrumentation, not a
+    proposed hardware fix.
+
+Build result:
+    `make docker-RK3326` completed successfully. Static verification confirms:
+
+        CONFIG_DPM_WATCHDOG=y
+        CONFIG_DPM_WATCHDOG_TIMEOUT=20
+        CONFIG_PSTORE_RAM=y
+        CONFIG_PSTORE_CONSOLE=y
+        CONFIG_PANIC_TIMEOUT=1
+
+    The built kernel contains `dpm_watchdog_handler()` and the ramoops/pstore
+    backend. The compiled RPPocket DTB reserves 0x3f800000..0x3f8fffff with
+    256 KiB crash, 512 KiB console, and 256 KiB pmsg rings. That range is
+    below the detected 1022 MiB RAM limit and above the normal 64 MiB CMA
+    range. The DTB still has no rockchip-suspend node. The rejected patch 035
+    is removed and the built rk805-pwrkey source is back to its baseline
+    `device_init_wakeup()` only, with no `dev_pm_set_wake_irq()` call.
+
+    Diagnostic image:
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 563ffd92e6d0f20031929f8030de2f7dc1c8dbee17fcf142bf218609873185e3
+        KERNEL SHA-256 33dc342796a8122a1eff3d22ed7ff971e457efb8422b679344f8ae1613ad77b4
+        SYSTEM SHA-256 6c4353d9ac36869407fc2c3a9c27f38858e17d745334114eb6b14086e05b90c8
+        RPPocket DTB SHA-256 3a23173896a61a08dd52a477c5f3b2e87b7d2ab1b7ffbdc294604bfe181495df
+
+    The PM-test mode now skips the normal broad register/I2C capture. On a
+    callback lockup, the expected sequence is: test starts after 45 seconds,
+    DPM watchdog panics after 20 seconds, the existing one-second panic timer
+    reboots, and the next boot copies `/sys/fs/pstore` to `/flash/pstore/`.
+    The one-shot marker is deleted before suspend, so it cannot panic-loop.
+
+Observed hardware result:
+    The expected watchdog reboot did not happen. The user eventually forced
+    recovery and reinserted the card. The returned card exactly matches the
+    diagnostic KERNEL, SYSTEM, and DTB hashes above. Its isolated one-shot log
+    again ends after the direct write at 02:02:13, with no return marker. The
+    next boot did not start until 02:15:51, about 13 minutes 38 seconds later,
+    confirming it was manual recovery rather than the expected 20-second
+    watchdog panic plus one-second reboot.
+
+    Ramoops itself is correctly reserved and probes successfully on the next
+    boot:
+
+        ramoops: using 0x100000@0x3f800000, ecc: 0
+        pstore: Registered ramoops as persistent store backend
+
+    `/flash/pstore/` is empty and the new journal contains no DPM timeout or
+    panic. The hard recovery can erase DRAM, but the absence of the automatic
+    panic is already decisive: the existing DPM watchdog was never armed.
+
+Interpretation / next step:
+    Upstream's DPM watchdog wraps normal device suspend/resume callbacks, but
+    not `dpm_prepare()`. The suspend path calls `suspend_console()` and then
+    `dpm_prepare()` before reaching the watched callbacks. `dpm_prepare()` can
+    block acquiring a device lock or inside a driver's prepare callback. This
+    explains a permanent hang with no watchdog panic and narrows the failure
+    to before the first normal suspend callback.
+
+    Extend the temporary DPM watchdog around each `device_prepare()` call so
+    it records the exact current device even if acquiring that device's lock
+    blocks. The Mali/genpd path remains the leading suspect: its runtime-PM
+    workers repeatedly warn in `disable_gpu_power_control()` and then double-
+    disable `clk_gpu` shortly before suspend, which can leave the GPU device
+    lock held when system PM enters prepare. Do not change GPU behavior yet;
+    first obtain the prepare-stage device name and blocked-task stack.
+
+Prepare/entry watchdog build:
+    Added temporary patch 036 to arm the existing 20-second DPM watchdog
+    around each `device_prepare()` call, before that function can block on the
+    device lock. Added patch 037 as a board-local 30-second outer fallback
+    around `suspend_console()` plus `dpm_suspend_start()`. The per-device
+    watchdog retains priority; the outer watchdog only fires if the path hangs
+    before any per-device watchdog can identify a device.
+
+    `make docker-RK3326` completed successfully. The applied kernel source and
+    vmlinux contain both watchdog handlers, the prepare-site arm/clear calls,
+    ramoops, CONFIG_PANIC_TIMEOUT=1, and the expected diagnostic strings. The
+    DTB is unchanged from the prior ramoops image and still has no
+    rockchip-suspend node.
+
+    Diagnostic image:
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 a40449775ffe939ebd314c8aab5e603b9cd6281dc77d38ab5b31307d493ad473
+        KERNEL SHA-256 9735c927f93002817288653266c9023b2626f8ab1d042f6e80162fb4fb291666
+        SYSTEM SHA-256 e0e0ecc40a1e0a65346a57d7d68e1b1638156d18f63aa698a36c198356233579
+        RPPocket DTB SHA-256 3a23173896a61a08dd52a477c5f3b2e87b7d2ab1b7ffbdc294604bfe181495df
+
+    Expected result: after the test begins, a prepare/device callback lockup
+    panics at 20 seconds and names the device; an earlier entry lockup panics
+    at 30 seconds and dumps the suspend task. Either panic should reboot one
+    second later and be copied from ramoops on the following boot.
+
+Observed prepare/entry-watchdog result:
+    The screen again remained dark for more than two minutes and there was no
+    automatic reboot. The first emergency long action had no effect; the
+    second rebooted the device. Card inspection confirms the exact diagnostic
+    image above booted. Its direct test again stops at the state write, this
+    time at 02:38:15, with no return. The next boot began at 02:44:17.
+
+    Ramoops again probes correctly but `/flash/pstore/` is empty and there is
+    no panic in the post-recovery boot. Because the required PMIC long-action
+    recovery can remove DRAM power, an empty RAM-backed pstore does not tell us
+    whether a software watchdog failed to fire or panicked and then failed to
+    restart the already-wedged platform. It does prove that this automatic
+    reboot/capture method is not a usable oracle on the RPPocket. Do not keep
+    expanding software-watchdog instrumentation.
+
+GPU clock-ownership candidate:
+    Move to the strongest concrete runtime fault. Every isolated boot warns
+    from Mali `disable_gpu_power_control()` because `clk_gpu` remains enabled,
+    then genpd's `pm_clk_suspend()` warns `clk_gpu already disabled`. The
+    existing patch 024 documents this exact double ownership: Mali kbase and
+    Rockchip genpd independently manage the same GPU bus clock. Its fix is
+    currently PX30S-only, while this board identifies as plain 0x33260000 and
+    therefore never takes it.
+
+    Added isolated patch 038 so only the RPPocket GPU domain skips
+    `GENPD_FLAG_PM_CLK`, leaving Mali as the sole GPU clock owner. It does not
+    apply the PX30S-only keep-domain-powered-on behavior and does not change
+    any wake, BL31, PMIC, or other device setting. The same direct
+    pm_test=devices test will show whether removing the observed GPU clock
+    corruption lets device suspend/resume return.
+
+    `make docker-RK3326` completed successfully. The applied source contains
+    the board guard and the diagnostic watchdog/ramoops support remains
+    unchanged. The compiled DTB is unchanged and still lacks rockchip-suspend.
+
+    Candidate image:
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 9bcbc94fc04a27acfe643b628ea1b22352409a1d236a99e4e6645e1990eebf45
+        KERNEL SHA-256 cd3ed5e83038cc62bf058174f7134dd19ab7d07e8ebcc42656a1a5708c7c1beb
+        SYSTEM SHA-256 dffb79f56978ab32b48a0fbc4f0f302638144e80c9036e99dabd2d27d6c8c079
+        RPPocket DTB SHA-256 3a23173896a61a08dd52a477c5f3b2e87b7d2ab1b7ffbdc294604bfe181495df
+
+Observed GPU clock-ownership result:
+    Rejected. The exact candidate hashes above are present on the returned
+    card, but the direct test still stops permanently at the state write at
+    03:17:10. Manual recovery started the next boot around 03:21. Ramoops is
+    empty again. The Mali runtime-suspend warning at
+    `disable_gpu_power_control()+0x6c` also remains; removing genpd's generic
+    PM-clock callbacks removed neither that warning nor the device-stage
+    lockup. Patch 038's GPU change has therefore been removed. Do not extend
+    the GPU workaround without a callback/device identification.
+
+Hardware-watchdog capture preparation:
+    Enable PX30's otherwise-disabled DesignWare watchdog only on the RPPocket.
+    Replace the rejected GPU patch with diagnostic patch 038, which leaves an
+    explicitly armed watchdog clocked during pm_test=devices. This is inactive
+    unless `/dev/watchdog0` is opened and does not change the normal suspend
+    path. Added `debug/pre.sh --watchdog-self-test` as a separate first gate:
+    it arms a 15-second watchdog without entering suspend and writes a pmsg
+    marker to ramoops. An automatic reboot plus the marker on the next boot
+    will prove both hardware reset and RAM persistence before relying on them
+    around the suspend lockup.
+
+    `make docker-RK3326` completed successfully. The applied source contains
+    the board-local active-watchdog suspend/resume guards, no RPPocket GPU
+    condition, and the compiled DTB has watchdog@ff1e0000 enabled while still
+    lacking rockchip-suspend.
+
+    Watchdog self-test image:
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 d7b206611f2fa09a667bc01389a59c09faa24c4bfb7349e8c16c2aac6621c241
+        KERNEL SHA-256 7eb3fd06e617e4008bd4809d1acf16762b5eece1b789d4fd704cfc3703574fd9
+        SYSTEM SHA-256 051901e9d10546d19cf7c7e573714c994ebbff6dab8e0a4e0d6e0dbf06d71c2b
+        RPPocket DTB SHA-256 1807a57ce8cf99bd7cd396f8eb09936a17b5b0933eebfabd5b2b86b5f89bfbba
+
+Source-led reassessment before watchdog testing:
+    Supersede the hardware-watchdog image rather than flash it. A renewed
+    comparison found a more direct stock-vs-ROCKNIX mismatch that should have
+    been tested before the GPU hypothesis. The vendor Linux 4.4.189 config has
+    `CONFIG_USB_DWC2=m`, and the RPPocket stock pre-sleep hook explicitly runs
+    `modprobe -r dwc2` with the comment "workaround until dwc2 is fixed".
+    ROCKNIX 6.12.79 instead had `CONFIG_USB_DWC2=y`. Although its common
+    `/usr/config/modules.bad` also lists `dwc2`, the generic sleep hook cannot
+    remove a built-in driver. Thus neither normal ROCKNIX suspend nor the
+    direct pm_test runs reproduced a key stock precondition.
+
+    Remove the untested watchdog node, driver patch, and self-test helper;
+    stock itself has watchdog support disabled. Change only DWC2 from built-in
+    to a module. Extend the direct test to remove it, log the return status,
+    and refuse to enter pm_test unless `/sys/module/dwc2` is absent. Restore
+    the module if the five-second test returns. This also lets the existing
+    normal ROCKNIX `modules.bad` path reproduce stock automatically.
+
+Stock-matching modular-DWC2 build:
+    `make docker-RK3326` completed successfully. Both source and final kernel
+    config report `CONFIG_USB_DWC2=m`; `dwc2.ko` is installed in the 6.12.79
+    kernel overlay with the Rockchip OF alias and is present in modules.dep.
+    The GPU and hardware-watchdog patches are absent. The DTB again has the
+    watchdog disabled, retains only ramoops diagnostics, and still lacks
+    rockchip-suspend so this test changes no BL31 or wake setting.
+
+    Candidate image:
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 438131e1c107da82bf5de0b04b0cbf339224006fb1a971af475e50ef82c6c6cc
+        KERNEL SHA-256 5f818105709d92ced3e89941195995ae806b83cd156dfd858c249d670404abbb
+        SYSTEM SHA-256 ca7ab3fc8f851564fa9140f08eccd31c3f60b020b4611a3aed20a0dc2b14a022
+        RPPocket DTB SHA-256 3a23173896a61a08dd52a477c5f3b2e87b7d2ab1b7ffbdc294604bfe181495df
+
+Observed modular-DWC2 result:
+    The test was valid but failed. The returned card matches all candidate
+    hashes. `dwc2.ko` loaded normally, `modprobe -r dwc2` returned zero, the
+    module disappeared from both lsmod and `/sys/module`, and only then was
+    pm_test=devices armed. The direct state write at 03:56:26 still never
+    returned. Manual recovery did not start another boot until about 04:24:33;
+    ramoops is empty again. DWC2 modularity matches stock and should remain,
+    but DWC2 is rejected as the device-stage blocker.
+
+    The same boot emitted two Mali runtime-suspend warnings and then
+    `clk_gpu already disabled` from `pm_clk_suspend()` immediately before the
+    test. The earlier single-clock-owner candidate suppressed only the genpd
+    half and did not fix suspend. The next definitive isolation is therefore
+    to prevent the GPU from probing at all, rather than alter another part of
+    its power sequence. Because the graphical stack may not start without
+    Mali, run that diagnostic from an early storage-backed systemd service,
+    not the graphical autostart hook.
+
+No-GPU isolation build:
+    Set only the RPPocket GPU node to disabled, retaining the now-stock-matched
+    modular DWC2 and all prior diagnostics. Add
+    `debug/pre.sh --pm-test-devices-no-gpu`, which installs a one-shot service
+    under `/storage/.config/system.d/` so the test does not depend on sway or
+    EmulationStation. The service verifies that `/dev/mali0`, mali_kbase, and
+    the ff400000.gpu platform device are all absent; unloads and verifies DWC2;
+    and then runs the same blocking pm_test=devices write. Because this image
+    may have no UI, it drives the source-confirmed active-high blue status LED
+    on GPIO0_C1 solid during the test. A successful return flashes that LED
+    three times and requests a clean automatic poweroff; a device-stage hang
+    should leave it solid.
+
+    `make docker-RK3326` completed successfully. The compiled DTB has
+    gpu@ff400000 disabled, the watchdog disabled, ramoops unchanged, and no
+    rockchip-suspend node. CONFIG_USB_DWC2 remains modular and dwc2.ko remains
+    packaged.
+
+    Candidate image:
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 97ddff73a4e7023c20abe58b88c45e017d1442de3251ddb1b7a42fc6cb920a3f
+        KERNEL SHA-256 c5998d615ac6a947b1e227b236b856d22ce83472b1566a097ef98449b662bb99
+        SYSTEM SHA-256 e396027f0e59635016516013f71e9520b94aca09330044c250ab10860aaa26de
+        RPPocket DTB SHA-256 6b9e14cb71c26d784b7cdbeac3cc40ee423bcf54a9c4eb04b8715c5e5326ff88
+
+Observed no-GPU result:
+    The test was valid but failed. The returned card matches all candidate
+    hashes. At 08:47:00 the service confirmed that `/dev/mali0`, mali_kbase,
+    and the ff400000.gpu platform device were all absent. It then unloaded
+    DWC2 successfully and confirmed `/sys/module/dwc2` was absent. The direct
+    state write at 08:47:01 did not return. Recovery did not boot until about
+    08:53:47. The next boot captured an empty pstore again.
+
+    This definitively rejects the GPU as the device-stage blocker, including
+    both the Mali callback and the GPU genpd/clock path. The Mali clock warning
+    is a real separate bug, but it does not cause this hang. Together with the
+    modular-DWC2 result, the two most direct stock-source leads are now ruled
+    out as the first blocker.
+
+    The software DPM timers have not fired while the blocked path is active,
+    and manual PMIC recovery erases ramoops. The next callback-identification
+    diagnostic should therefore use the otherwise-disabled DesignWare hardware
+    watchdog only as a temporary warm-reset capture mechanism. Serialize DPM
+    callbacks with pm_async=0 and retain pm_print_times so ramoops can identify
+    the final `calling ...` line. Keep an actively armed watchdog clocked in
+    its PM callback; if the state write blocks, hardware reset should preserve
+    the console ramoops buffer for the automatic next-boot collector. This is
+    diagnostic instrumentation, not a candidate product policy; stock keeps
+    its watchdog disabled and the final image must do the same.
+
+Hardware-watchdog callback-capture build:
+    Keep the no-GPU/DWC2-unloaded test environment unchanged and enable only
+    the px30 DesignWare watchdog. Patch its ordinary device suspend callback
+    so an actively opened watchdog remains clocked; normal behavior remains
+    unchanged when userspace has not armed it. The test sets pm_async=0 for an
+    ordered callback trace, opens `/dev/watchdog0`, verifies its status, and
+    enters the same pm_test=devices state. Existing pm_print_times emits each
+    callback start/end to console-ramoops. A hang should reset in hardware;
+    the one-shot service detects its pending marker on the warm boot, copies
+    both kernel and systemd pstore records to STORAGE, then powers off. A
+    successful five-second PM test closes the watchdog and powers off without
+    rebooting.
+
+    `make docker-RK3326` completed successfully. The compiled watchdog driver
+    contains the active-watchdog keep-clocked path. The DTB has watchdog
+    enabled, GPU disabled, ramoops unchanged, and no rockchip-suspend node.
+    CONFIG_DW_WATCHDOG=y, CONFIG_DPM_WATCHDOG=y, and CONFIG_USB_DWC2=m remain
+    present.
+
+    Candidate image:
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 1b2e61b2956f05b0190904995e1337f57902e13991bada1e368bf906c182c203
+        KERNEL SHA-256 9dda794d5d51d02041495b837c83e776c66293c8844a0c06706d88cca5ff7e41
+        SYSTEM SHA-256 3d1040ab8d65d9c674df3b73445c563398799086b982bf7a4b32a5c73b087840
+        RPPocket DTB SHA-256 91c566be2d5bdd012feae5661d1bf4c3d0ffb49c9029b85cf043f434408b22fe
+
+Observed hardware-watchdog result:
+    A later log proves that the intended test did run at 05:53:39 EDT. It
+    confirmed no GPU platform device/module/node, unloaded DWC2, opened
+    `/dev/watchdog0`, set pm_async=0, armed pm_test=devices, and blocked at the
+    state write. The unit nevertheless remained powered for more than five
+    minutes. Thus the px30 DesignWare watchdog does not provide the needed
+    warm-reset oracle on this board/configuration. Reject this diagnostic and
+    remove both watchdog DT enablement and patch; do not ask for a repeat.
+
+    The follow-up host preparation correctly failed its new verification:
+    the prior run left the WDT pending marker, so no install manifest was
+    generated. The one-shot was recreated before the failure, but that card
+    must not be booted. Make preparation remove stale run-state before its
+    final checks.
+
+    Replace the failed reset oracle with a bounded serialized callback walk.
+    A kernel debugfs limit should abort immediately before callback/list entry
+    N and print that entry's phase/device. Userspace can run limits 0, 1, ...,
+    persisting and syncing each candidate before allowing it on the next run.
+    When the real blocker is finally allowed, the on-disk log already names
+    it. Synthetic aborts skip the normal five-second pm_test delay, allowing
+    the walk to happen in one boot without relying on ramoops or auto-reset.
+
+Bounded callback-walk build:
+    Remove the failed hardware-watchdog patch and disable the watchdog DT node
+    again. Add a temporary debugfs `rppocket_pm_callback_limit` control in the
+    PM core. With its default U32_MAX value it has no effect. For limit N, the
+    PM core allows N serialized entries across dpm_prepare and dpm_suspend,
+    logs phase/device/driver for entry N, and returns -ECANCELED before touching
+    it. The storage service walks N upward. After each safe return it syncs the
+    named entry before allowing that entry on the next trial. Therefore, if an
+    entry hangs, `rppocket-pm-callback-walk.log` already contains an
+    `ABOUT TO ALLOW PREVIOUSLY BLOCKED ENTRY` line naming it. Each synthetic
+    error bypasses the ordinary five-second pm_test delay. Short blue pulses
+    indicate progress; a solid LED after pulses begin indicates the blocked
+    trial. The systemd service has no startup timeout.
+
+    Preparation now removes stale WDT state, validates every service/script/
+    marker/link, validates callback-walk content, and writes a v2 checksum
+    manifest. The card must remain in the host for independent read-only
+    verification after flashing and before boot.
+
+    The first build attempt failed because this 6.12 debugfs API has u32 but
+    not s32 helpers. Change the disabled sentinel to U32_MAX and rebuild.
+    `make docker-RK3326` then completed successfully. The compiled PM object
+    contains both the debugfs control and callback-stop string; the old
+    watchdog keep-clocked string is absent. The DTB has GPU disabled, watchdog
+    disabled, ramoops unchanged, and no rockchip-suspend node. DWC2 remains
+    modular.
+
+    Candidate image:
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 171689a35825612fabfef43baff67185f37997af5264d726bd0ccfb858f1fea0
+        KERNEL SHA-256 0c93c3878a5ca157193d1d7456e5e8581ccd791054c44385619cbb6fe5ade77c
+        SYSTEM SHA-256 ed5b9fa7b969d27fab289c52f0d32240152aa6108480d8f8b53a4aefa30077fe
+        RPPocket DTB SHA-256 6b9e14cb71c26d784b7cdbeac3cc40ee423bcf54a9c4eb04b8715c5e5326ff88
+
+Prepared-card verification before callback-walk boot:
+    Mounted ROCKNIX and STORAGE read-only. KERNEL, SYSTEM, and RPPocket DTB
+    match the candidate hashes above. The KERNEL contains the callback limit
+    and stop-format strings and does not contain the removed keep-active-
+    watchdog diagnostic string. The compiled DTB has GPU and watchdog disabled,
+    retains ramoops, and has no rockchip-suspend node.
+
+    The v2 manifest exists and its SHA-256 entries match the installed script
+    and service. The executable script, one-shot and mode markers, infinite
+    service timeout, five-flash startup handshake, bounded <=1024 loop,
+    pre-allow log record, direct freeze write, service symlink and target all
+    verify. No callback log exists yet and no stale watchdog marker/artifact
+    remains. Both filesystems were unmounted cleanly after inspection. This
+    card is cleared for the first callback-walk boot.
+
+Callback-walk result -- first blocker identified:
+    The valid harness started at 10:19:42 UTC. It confirmed no Mali device or
+    module, no ff400000.gpu platform device, successful DWC2 unload, a writable
+    callback-limit control, pm_async=0, and pm_test=devices. Limits 0 through
+    463 returned through the synthetic boundary. Limit 463 stopped safely at:
+
+        index=463 phase=suspend device=0-0020 driver=rk8xx-i2c
+
+    Limit 464 synced `ABOUT TO ALLOW PREVIOUSLY BLOCKED ENTRY` for that exact
+    device and then hung. Therefore the first device-stage blocker is the RK817
+    parent PM callback `rk8xx_suspend()`, not GPU, DWC2, a child pwrkey/RTC/
+    regulator callback, or a later I2C-controller callback. The complete log is
+    preserved as `debug/rppocket-pm-callback-walk-rk8xx.log`, SHA-256:
+
+        0d2c6fbb0490e0e13061fe5277965ac42e57eeb71ffffd3493dc1d01f632ecd1
+
+Source-backed cause and next experiment:
+    Patch 028 added the vendor RK817 pinctrl states but combined them with the
+    upstream RK8xx suspend sequence. The resulting callback first configures
+    the PMIC sleep pin function while polarity remains active-low from probe,
+    then selects the SoC `pmic-sleep` mux. That can assert the external sleep
+    signal immediately and remove CPU rails inside the callback.
+
+    The exact vendor 4.4 RK817 driver instead disables the PMIC sleep-pin
+    function, changes sleep polarity to active-high, and only then selects the
+    combined SoC/PMIC sleep pinctrl state. Resume disables the function,
+    restores active-low polarity, and then selects reset state. Add patch 039
+    implementing that ordering when RK817 pinctrl states exist while retaining
+    the upstream fallback when they do not. This is one logical, source-backed
+    change; suspend and resume must change together because every synthetic
+    boundary unwinds already-suspended callbacks.
+
+    Continue the bounded walker at limit 464. Its first synced line names the
+    known 0-0020/rk8xx-i2c callback before retesting it, then identifies any
+    later blocker without replaying 463 known-safe boundaries.
+
+RK817 sequence-fix continuation build:
+    `make docker-RK3326` completed successfully with patch 039. The unpacked
+    compiled source has the vendor ordering in both rk8xx_suspend() and its
+    unwind path rk8xx_resume(); the callback-limit diagnostic remains present.
+    The DTB is intentionally unchanged: GPU disabled, watchdog disabled,
+    ramoops retained, and no rockchip-suspend node. The v3 harness begins at
+    limit 464 and pre-logs the known RK817 parent callback.
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 adde88d8ef808b658374b54a1e68ed7a4b19956b9e2feb01b482a9b4014bb8cd
+        KERNEL SHA-256 70dc8548c6b80ed07de06f7b1b18725568b2e49268daef0c1e09fdc8ca3f2247
+        SYSTEM SHA-256 d5bbb97ba90f2ab2c56223326229fdf332a2b2d452cfc9ec17df0f21427b8980
+        RPPocket DTB SHA-256 6b9e14cb71c26d784b7cdbeac3cc40ee423bcf54a9c4eb04b8715c5e5326ff88
+
+RK817 sequence-fix prepared-card verification:
+    Mounted both filesystems read-only. KERNEL, SYSTEM, and RPPocket DTB match
+    the candidate hashes above; their image MD5 files also match. The KERNEL
+    contains the callback-limit signatures and not the removed hardware-
+    watchdog signature. The DTB and boot-script RPPocket selection verify.
+
+    The installed v3 manifest hashes match the executable script and service.
+    Verified the one-shot/mode markers, service symlink, infinite timeout,
+    five-flash handshake, synced index-463 0-0020/rk8xx-i2c pre-log, limit-464
+    start, <=1024 bound, and direct freeze write. No stale watchdog marker or
+    pre-existing callback log exists. The card is cleared for the RK817-fix
+    continuation boot after clean unmount.
+
+RK817 sequence-fix continuation result -- device phase succeeds:
+    The valid v3 harness confirmed GPU isolation, unloaded DWC2, disabled PM
+    async, and began at limit 464. Limit 464 allowed the formerly blocking
+    0-0020/rk8xx-i2c callback and stopped safely at the next entry. Due to PM
+    list movement during synthetic unwind, 0-0020 appeared again at index 465;
+    limit 466 allowed it again and safely reached i2c-0. The walk then passed
+    every remaining entry through index 723.
+
+    At limit 724 there was no next synthetic boundary: pm_test=devices ran to
+    completion, resumed all devices, and the direct state write returned status
+    zero. The captured dmesg shows rk8xx_resume() itself returned zero in 940
+    microseconds during final unwind. This confirms patch 039 fixes the first
+    blocker and that the entire device stage now completes with the same
+    no-GPU, DWC2-unloaded isolation. Complete evidence is preserved as:
+
+        debug/rppocket-pm-callback-walk-rk817-fixed.log
+        SHA-256 6a85553c5759debfe94b8d577133d3ae8861cd9656b538081dbe7193b4f5996d
+
+Next experiment -- real freeze and slider wake:
+    Keep this exact image, GPU isolation, DWC2 unload, and RK817 fix. Replace
+    only the storage harness: force the callback limit to U32_MAX, set pm_test
+    to none, and directly write `freeze`. Hold a systemd handle-power-key
+    inhibitor across the write so the wake event cannot make logind immediately
+    request a second suspend. Five blue flashes prove startup; after 45 seconds
+    the LED turns off immediately before the write. One short slider action then
+    requests wake. A returned write produces three flashes and clean poweroff.
+    This separates real freeze/wake from the later BL31 deep-suspend policy.
+
+Real-freeze prepared-card verification:
+    Mounted both filesystems read-only. The unchanged corrected KERNEL, SYSTEM,
+    and DTB hashes match. The v4 manifest hashes match its installed executable
+    and service, and the script is byte-identical to the reviewed pre.sh
+    generator. Verified the one-shot/mode markers, service link and infinite
+    timeout, five-flash handshake, U32_MAX callback sentinel, pm_test=none,
+    handle-power-key inhibitor, LED-off pre-entry signal, direct freeze write,
+    resume marker, and automatic-poweroff path. `systemd-inhibit` exists in the
+    matching SYSTEM payload. Callback, real-freeze, and stale-watchdog evidence
+    paths are absent before boot. Cleared for real-freeze testing after clean
+    unmount.
+
+Real-freeze result -- slider wake and full resume succeed:
+    The v4 harness confirmed GPU absent, unloaded DWC2, forced callback limit
+    disabled, pm_test=none, and pm_async=0. The direct freeze write entered all
+    normal device, late, and noirq phases, reached suspend-to-idle, and remained
+    asleep for 24.775 seconds. The user's one short slider action produced:
+
+        PM: Triggering wakeup from IRQ 29
+
+    The kernel completed noirq, early, and normal device resume;
+    rk8xx_resume() returned zero in 807 microseconds. Userspace restarted and
+    the direct state write returned status zero before the harness flashed and
+    powered off. This proves both real freeze and power-slider wake signaling
+    work after patch 039 under the no-GPU/DWC2-unloaded isolation. Evidence:
+
+        debug/rppocket-pm-freeze-no-gpu.log
+        SHA-256 0ca245b33c7c1114f7698fcd2b62e52b1d0fd98fa2708bf3e0e244166f1505b1
+
+Next experiment:
+    Restore only the GPU DT status while retaining the RK817 fix, modular and
+    pre-sleep-unloaded DWC2, callback diagnostic disabled by default, watchdog
+    disabled, and no rockchip-suspend policy. Repeat the same real-freeze and
+    short-slider-wake test. This moves from the isolation configuration toward
+    the product configuration before introducing BL31 deep suspend.
+
+GPU-restored real-freeze build:
+    Restore the RPPocket GPU node to okay and make no other kernel/DT policy
+    change. `make docker-RK3326` completes successfully. The compiled DTB has
+    GPU okay, watchdog disabled, ramoops retained, and still no
+    rockchip-suspend node. Patch 039 and the default-disabled callback control
+    remain compiled; DWC2 remains modular. The v5 real-freeze harness records
+    and verifies `expect-present` before testing.
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 81ce89a1539dd3caa8e7ff43c3bfc23e63eeca6bd7cf4cc14ac8880ccafdb69a
+        KERNEL SHA-256 aad9fa2a28c6b6bf60d1ec5795663a692d402603fd0150e0c6d6586e822de118
+        SYSTEM SHA-256 24038923213b4e863c26434f585bc851f1e520cb2f085ff289d5981449a88b04
+        RPPocket DTB SHA-256 3a23173896a61a08dd52a477c5f3b2e87b7d2ab1b7ffbdc294604bfe181495df
+
+GPU-restored real-freeze card verification:
+    Prepared with `debug/pre.sh --flash --pm-freeze --no-dwc2-rebind` and
+    independently mounted read-only before authorizing boot. KERNEL, SYSTEM,
+    and DTB hashes match the build above. The compiled DTB has GPU okay,
+    watchdog disabled, ramoops present, and no rockchip-suspend policy. The
+    one-shot marker, `expect-present` mode, service link, infinite service
+    timeout, five-flash startup handshake, DWC2 unload, unbounded callback
+    limit, pm_test=none, serialized callbacks, logind inhibitor, LED-off entry
+    signal, direct freeze write, three-flash return signal, and automatic
+    poweroff all verify. No prior freeze/callback/pstore evidence is present.
+    The installed files are byte-identical to the reviewed generator.
+
+        harness=rppocket-gpu-real-freeze-v5
+        script SHA-256 e51f0a35e9b59d3f6634c76190c92e1c59dfd80bfb2e9c5d10b308b7cdd4c3f7
+        service SHA-256 7367c84bcfea60148416228094388c57b25bcf268edf28c93bd09f71d0063b1e
+
+    Both card filesystems were then cleanly unmounted.
+
+GPU-restored v5 result:
+    The controlled direct-freeze test did not run. The service started from
+    multi-user.target and checked at 12:48:33, but ROCKNIX loads mali_kbase
+    from common autostart only after graphical.target; the harness therefore
+    correctly stopped with `ERROR: GPU was expected but is not fully present`.
+    Mali probed three seconds later. This is a harness-ordering failure, not a
+    GPU suspend result.
+
+    After the harness exited, normal logind handling remained active. The user
+    observed a power-key blank/wake behavior with the LCD backlight remaining
+    visibly on. Persistent userspace logs show that real system suspend did
+    return multiple times with the GPU loaded: the first pre/post interval was
+    about 22 seconds and later intervals were about 7 and 6 seconds. One wake
+    was followed roughly four seconds later by another suspend request,
+    consistent with the wake-key event being seen again after resume. A final
+    suspend began before forced shutdown, so its log has no post phase. These
+    uncontrolled cycles are useful evidence that restored-GPU suspend can
+    return, but they do not replace the direct freeze test because logind used
+    `mem`, DWC2 handling came from the normal sleep hooks, and the precise
+    kernel phase/wake path was not captured.
+
+        debug/rppocket-pm-freeze-gpu-v5-early.log
+        SHA-256 5cc7dbeb3877231ca16acc70ab4b84905770c9d4c2136e25a76692946d923b9d
+        debug/rppocket-pm-freeze-gpu-v5-messages.log
+        SHA-256 aa72a4be08129483570882ba5002cdf2c0371282ad4f90b6ad29ad3a12096e4e
+        debug/rppocket-pm-freeze-gpu-v5-sleep.log
+        SHA-256 7bfaa3c6ec22c0ba7fb2bf88e14994a5c563bfd358bbd8178c07658e0eadde8f
+
+Next controlled experiment:
+    Keep the exact same image and direct-freeze script, but order the
+    GPU-present service after rocknix-autostart.service and enable it from
+    rocknix.target instead of multi-user.target. This lets the standard
+    003-gpudriver path finish before the harness verifies mali_kbase,
+    /dev/mali0, and ff400000.gpu. No image rebuild or reflash is needed.
+
+GPU-restored v6 card verification:
+    The existing card was prepared without reflashing, then independently
+    mounted read-only. KERNEL, SYSTEM, and DTB retain the verified GPU-restored
+    hashes. The new manifest identifies rppocket-gpu-real-freeze-v6. The
+    service is enabled only from rocknix.target, ordered after
+    rocknix-autostart.service, absent from multi-user.target, and configured
+    with an infinite start timeout. Its expect-present marker and all direct
+    freeze safeguards/signals verify; old PM and boot/pstore logs are absent.
+    The installed script and service are byte-identical to the reviewed
+    generator. The card was then cleanly unmounted.
+
+        script SHA-256 e51f0a35e9b59d3f6634c76190c92e1c59dfd80bfb2e9c5d10b308b7cdd4c3f7
+        service SHA-256 c055ed1620d154d93bba96063281698d3dff8dbfb6b1679437577481733970d8
+        manifest SHA-256 73a7eeac694d7bfd9dd3ae27670a178772c7ad5c21c76b538c159303e2e0f6cb
+
+GPU-restored v6 real-freeze result:
+    Success. The one-shot was consumed and the expected v6 artifacts/hashes
+    remained installed. It verified ff400000.gpu, mali_kbase, and /dev/mali0;
+    unloaded DWC2; selected pm_test=none with pm_async=0; and entered direct
+    `freeze`. The system remained in suspend-to-idle for 79.543 seconds. One
+    brief slider action woke IRQ 29. All noirq, early, and normal resume work
+    completed; rk8xx_resume returned zero in 769 microseconds, the Mali resume
+    callback returned zero, tasks restarted, `PM: suspend exit` appeared, and
+    the direct state write returned status zero before automatic poweroff.
+    Pstore is empty. This proves real freeze and slider wake with the normal GPU
+    present and DWC2 removed.
+
+        debug/rppocket-pm-freeze-gpu-v6.log
+        SHA-256 65534bda1efaab3ef539430e986b0fc2ca669711dd416f6424924bfc705797c5
+
+    The successful cycle also captured a separate GPU clock correctness issue
+    in both noirq directions: genpd tried to manage Mali's `clk_gpu` after Mali
+    had unprepared it, producing `Enabling unprepared clk_gpu`, a failed power-
+    domain clock enable, and `__pm_clk_enable ... error -108` on resume. This is
+    the exact double-ownership mechanism already documented by patch 024. The
+    earlier RPPocket single-owner experiment only proved it was not the then-
+    unknown device-stage blocker; it ran before the RK817 blocker was fixed and
+    therefore could not validate a full system suspend/resume cycle.
+
+Next controlled experiment:
+    Before enabling BL31 deep suspend, extend only patch 024's existing
+    GENPD_FLAG_PM_CLK exception to the source-confirmed
+    `funnyplaying,rppocket` machine. Do not apply the PX30S keep-domain-on
+    workaround. Repeat the same GPU-present real freeze. It must still resume
+    and must no longer emit the genpd `clk_gpu` unprepared/-ESHUTDOWN warnings.
+
+RPPocket GPU single-clock-owner build:
+    Added patch 040, extending only patch 024's GENPD_FLAG_PM_CLK exception to
+    `funnyplaying,rppocket`; the PX30S-only power-domain-on exception remains
+    unchanged. `make docker-RK3326` succeeds. The applied source and compiled
+    pm-domains object contain the RPPocket guard. The DTB remains unchanged
+    with GPU okay, watchdog disabled, ramoops retained, and no BL31 suspend
+    policy. DWC2 remains modular and patch 039 remains present.
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 68e3e06ab462e16c054f2506278ef776081b3a03740a5680b589672cb5e8f6a7
+        KERNEL SHA-256 5f992795083f4641c93a7c0e711f3d6cdaee06d22ebf758d26ff95aa4fadb1ce
+        SYSTEM SHA-256 6ef802e82e2c14c7b9c047866bf9eccab82829ae2f28736e6e0844ac79d09f35
+        RPPocket DTB SHA-256 3a23173896a61a08dd52a477c5f3b2e87b7d2ab1b7ffbdc294604bfe181495df
+
+GPU single-clock-owner real-freeze result:
+    Success. The verified GPU-present v6 one-shot was consumed. GPU and Mali
+    were present, DWC2 unloaded, and direct `freeze` remained suspended for
+    50.749 seconds before one slider action woke IRQ 29. Every suspend and
+    resume phase completed, rk8xx_resume returned zero in 467 microseconds,
+    Mali resume returned zero, `PM: suspend exit` appeared, and the state write
+    returned zero before automatic poweroff. The previous genpd
+    `Enabling unprepared clk_gpu`, failed clock-enable, and -108 messages are
+    absent; both Mali genpd noirq callbacks now return zero. This validates
+    patch 040 and is a second controlled GPU-present real-freeze success.
+
+        debug/rppocket-pm-freeze-gpu-single-owner.log
+        SHA-256 3379b2b7dc26654359172f06c8825a453d5ce6fc3ab743c786d7008c3928d6fb
+
+    Independent boot capture found one remaining, earlier GPU runtime-PM
+    warning at driver startup, before the controlled freeze:
+
+        disable_gpu_power_control+0x6c/0xa0 [mali_kbase]
+        WARN_ON(__clk_is_enabled(kbdev->clocks[i]))
+
+    `__clk_is_enabled()` reports the global hardware gate state, not this
+    consumer's CCF enable ownership. `clk_gpu` remains physically enabled by
+    its always-on/ignore-unused child clocks after Mali releases its own one
+    probe-time reference, so the warning is not evidence that Mali failed to
+    release that reference. The matching resume-side check can also skip
+    taking Mali's own reference whenever another consumer has the gate on.
+    Patch 003 already corrected this exact anti-pattern for the regulator but
+    left the equivalent clock checks unchanged.
+
+        debug/rppocket-pm-freeze-gpu-single-owner-boot.log
+        SHA-256 5154d3c8b396d0ce2887adc44c2c70f1730336419ed82f0918d9aa78187d357d
+
+Next controlled experiment:
+    Make Mali clock ownership unconditionally balanced just like patch 003's
+    regulator ownership: always clk_prepare_enable() on its power-on path and
+    always clk_disable_unprepare() on its power-off path, without global
+    `__clk_is_enabled()` gates or a post-disable global-state warning. Repeat
+    real freeze once to verify startup is warning-free and freeze/wake remains
+    successful. Only then introduce the stock BL31 deep-suspend policy.
+
+Balanced Mali runtime-clock build:
+    Added Mali patch 004. Its power-on callback now always acquires one clock
+    reference and its power-off callback always releases one; neither path uses
+    global `__clk_is_enabled()` as ownership state. `make docker-RK3326`
+    succeeds, the build log confirms patch 004 was applied, the rebuilt runtime
+    PM object contains the reviewed source, and the packaged Mali module was
+    regenerated. Patch 040 and the RK817 sequence remain present. The DTB is
+    unchanged: GPU okay, watchdog disabled, ramoops present, and no BL31 policy.
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 00bd75ae01f51d2b0980eef04a4ec639279dbaa87e19662f4faaecb92c12c00a
+        KERNEL SHA-256 5f992795083f4641c93a7c0e711f3d6cdaee06d22ebf758d26ff95aa4fadb1ce
+        SYSTEM SHA-256 5d9d22e844759cbaaedca8f25385da4d34fb1a3281c51931b3e3f971fb63fbff
+        RPPocket DTB SHA-256 3a23173896a61a08dd52a477c5f3b2e87b7d2ab1b7ffbdc294604bfe181495df
+
+Balanced-clock v7 card verification:
+    Flashed with `--pm-freeze --no-dwc2-rebind` and independently mounted
+    read-only before boot authorization. Card KERNEL, SYSTEM, and DTB are byte-
+    identical to the balanced-clock build. The reviewed script and GPU service
+    are byte-identical to their generator; mode is `expect-present`; the fresh
+    one-shot marker and sole rocknix.target link are correct; and old PM logs
+    and pstore evidence are absent. The compiled DTB still has GPU enabled,
+    watchdog disabled, ramoops present, and no BL31 policy.
+
+        harness=rppocket-gpu-real-freeze-v7
+        script SHA-256 e51f0a35e9b59d3f6634c76190c92e1c59dfd80bfb2e9c5d10b308b7cdd4c3f7
+        service SHA-256 c055ed1620d154d93bba96063281698d3dff8dbfb6b1679437577481733970d8
+        manifest SHA-256 14bbc3d6e50dcd050645686d72621ebaad51c5aa3735c3237192661c5b575eed
+
+Balanced-clock v7 real-freeze result:
+    Success. The one-shot was consumed with the exact balanced-clock KERNEL,
+    SYSTEM, DTB, manifest, script, service, and `expect-present` mode. GPU and
+    Mali were present and DWC2 unloaded. Direct `freeze` remained suspended for
+    75.037 seconds, then one slider action woke IRQ 29. Every PM phase returned;
+    rk8xx_resume returned zero in 958 microseconds, both Mali genpd noirq
+    callbacks and Mali normal resume returned zero, `PM: suspend exit` appeared,
+    and the state write returned status zero before automatic poweroff.
+
+    Neither the former genpd clk_gpu/-108 errors nor the startup
+    disable_gpu_power_control warning/call trace appears. This validates Mali
+    patch 004 and gives a third controlled GPU-present freeze/wake success.
+    The 41-byte ramoops record contains only `Restarting system` from a prior
+    normal restart, not a crash.
+
+        debug/rppocket-pm-freeze-gpu-balanced-clock.log
+        SHA-256 6d61ed1d4d51d644465960ccc1703ce878b0612ef487bfa86143d9a804444eee
+        debug/rppocket-pm-freeze-gpu-balanced-clock-boot.log
+        SHA-256 0ef1f7475cbb5ff6b86d4cc4b97858a05d1e716829225058ad391c6f73d39608
+
+Next controlled experiment:
+    Real GPU-present freeze is now repeatable and warning-free. Introduce only
+    the stock RPPocket `rockchip-suspend` policy (`sleep-mode-config=0x20702`,
+    `wakeup-config=0x85`, `sleep-debug-en=1`) and test direct deep `mem`
+    separately. Keep the validated RK817, GPU clock ownership, and DWC2 unload
+    behavior unchanged. The deep harness must retain logind inhibition and LED
+    signals but write `deep` to mem_sleep and `mem` to power/state.
+
+Stock-policy deep-mem build:
+    Added the RPPocket-only `rockchip-suspend` node with the exact compiled
+    v1.1.3 stock values and built successfully with `make docker-RK3326`.
+    Independently decompiled the resulting DTB and used fdtget to verify
+    compatible/status and all three exact values. CONFIG_ROCKCHIP_PM_CONFIG=y;
+    its built object retains the per-attempt prepare hook that sends
+    LINUX_PM_STATE plus the mode/wakeup configuration to BL31. The validated
+    RK817 and GPU clock fixes remain present; GPU remains enabled, DWC2 remains
+    modular, watchdog remains disabled, and ramoops remains present.
+
+    Added isolated `debug/pre.sh --pm-deep` harness v1. It waits for normal GPU
+    startup, requires GPU/Mali and a bound rockchip-suspend policy driver,
+    unloads DWC2, selects unbounded callbacks/pm_test none/pm_async zero,
+    explicitly selects deep, inhibits logind's power-key handling, writes mem
+    directly, and uses the established five-flash/off/three-flash/poweroff LED
+    protocol. Its extracted script passes `sh -n`.
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 fae92fd42da009d3a9f9804041630f480848d894b94571fe58f227ffdfd05c23
+        KERNEL SHA-256 57d035e7b8ca33f65de9bebc21279239fbb0c8876f787067c22213265adf7223
+        SYSTEM SHA-256 08ca1bde1dc63f663af39c265a73f644a96b46efeae4a4398b15154789010142
+        RPPocket DTB SHA-256 dcbece2e946bfaf462c4484da15830e771d435a28ae1655631447d5ecdad543d
+        deep script SHA-256 cd6aeba594b32b101e0925537cddedd1e201ecc5fa3fd5f94f79edda42d9be69
+        deep service SHA-256 c036eb33a5a3899c6136a2ceeee3eae39312e8db7e8d4b650dbe60099e4299ce
+
+Stock-policy deep v1 card verification:
+    Flashed with `--pm-deep --no-dwc2-rebind` and independently mounted read-
+    only before boot authorization. Card KERNEL, SYSTEM, and DTB are byte-
+    identical to the reviewed build. fdtget reconfirms the exact stock policy.
+    The deep script and service are byte-identical to their reviewed generator;
+    the fresh marker and sole rocknix.target link are correct; freeze services
+    are absent; and all old PM logs and pstore evidence are absent.
+
+        harness=rppocket-stock-policy-deep-v1
+        manifest SHA-256 4b6ccd1011a55f9e0cd25b6b2342f7986baaf1d0481892e5eb9ab2fdf5ece537
+
+Stock-policy deep v1 result:
+    Success. The verified one-shot was consumed. GPU/Mali and the bound BL31
+    policy driver were present, DWC2 unloaded, mem_sleep showed `[deep]`, and
+    the kernel logged `PM: suspend entry (deep)`. All devices and noirq phases
+    suspended, CPUs 1-3 were killed, the PSCI firmware suspend callback ran,
+    and the system remained asleep for 55.421 seconds. One slider action woke
+    IRQ 29. CPUs 1-3 restarted, every resume phase completed, rk8xx_resume
+    returned zero in 624 microseconds, Mali resumed cleanly, `PM: suspend exit`
+    appeared, and direct deep mem returned status zero before automatic
+    poweroff. No GPU clock warnings or crash evidence appeared. Ramoops contains
+    only a normal prior `reboot: Restarting system` line.
+
+        debug/rppocket-pm-deep-stock-policy-v1.log
+        SHA-256 50679850e2ea95132d659a87fc6e189ba18585af1e5111c4f74559e6e59a8abd
+        debug/rppocket-pm-deep-stock-policy-v1-boot.log
+        SHA-256 2d0962bde8d7d2c57830b9dbaa1f6176f20ef6a9cbbc0cce7c5716740b87d5f8
+
+    The successful test was nevertheless contaminated before PM entry by the
+    generic debug autostart's old broad register/I2C capture. Its isolation
+    condition recognized the freeze markers but not the new deep marker, so
+    dump_pmic_i2c_state started an I2C1 scan and generated repeated
+    `rk3x-i2c ff190000.i2c: unexpected irq in STOP: 0x90` messages. This did not
+    block deep suspend or resume, but it must not be present in a reliability
+    result.
+
+Next controlled experiment:
+    Add the deep one-shot marker to the generic debug hook's early isolation
+    condition, reinstall deep v2 without reflashing, independently verify it,
+    and repeat one deep cycle. The direct PM harness is unchanged; the expected
+    difference is only absence of broad register/I2C diagnostic interference.
+
+Clean deep v2 card verification:
+    Reinstalled without reflashing and independently mounted read-only. KERNEL,
+    SYSTEM, DTB, deep script, and service remain byte-identical to the successful
+    v1 setup. The generic debug hook is byte-identical to the reviewed v2
+    generator and now exits early when the fresh deep marker exists. The v2
+    manifest hashes that hook as well as the harness and service. Marker/link,
+    exact stock policy, empty PM logs, and empty pstore all verify.
+
+        harness=rppocket-stock-policy-deep-v2
+        debug hook SHA-256 42a7f386877ab58a3551a5a2c0805f19e943b1558eff06531cbd8038d4fe69de
+        manifest SHA-256 a32820a6ef818e9df586e988e39475a26a3614de5fb47d86a3d5a938d2e7c2e8
+
+Clean deep v2 result:
+    Success. The v2 one-shot was consumed with exact image/harness hashes. GPU,
+    Mali, BL31 policy binding, DWC2 unload, and explicit `[deep]` selection all
+    verified. The system remained in deep suspend for 17.417 seconds. One
+    slider action woke IRQ 29; CPUs 1-3 restarted; all noirq, early, and normal
+    callbacks resumed; rk8xx_resume returned zero in 576 microseconds; Mali
+    resumed cleanly; and deep mem returned status zero before automatic
+    poweroff. There are zero I2C STOP errors, zero GPU clock warnings, zero PM
+    failures/call traces, and no pstore record. This is the uncontaminated
+    repeat that validates the stock BL31 policy and completes controlled kernel
+    deep-suspend bring-up.
+
+        debug/rppocket-pm-deep-stock-policy-v2-clean.log
+        SHA-256 1af327e378251aec2ca38e76d1e475d34ec936f3f897a04a44026a5008e82fb3
+        debug/rppocket-pm-deep-stock-policy-v2-clean-boot.log
+        SHA-256 ff98ef4b675217617c149b286c6e56e077460589a18935556cd65b4a45916af2
+
+Next phase:
+    Remove diagnostic-only PM instrumentation and harness dependencies, restore
+    production watchdog policy, configure systemd short power-key suspend and
+    five-second long-press poweroff for the RPPocket, then test normal logind-
+    driven deep suspend/resume and long hold separately. Preserve the validated
+    RK817 sequence, DWC2 modularity/stock sleep unload, Mali clock ownership,
+    and stock rockchip-suspend policy.
+
+Production-policy build:
+    Removed diagnostic patches 036/037/038, disabled CONFIG_DPM_WATCHDOG again,
+    and removed the temporary ramoops reservation. Retained only the validated
+    RK817, GPU clock, DWC2 modularity, and BL31 policy changes.
+
+    Extended the RPPocket device quirk to install a volatile logind drop-in and
+    reload logind after device detection. Effective intended actions are
+    HandlePowerKey=suspend and HandlePowerKeyLongPress=poweroff; systemd 255's
+    native long-press timer is exactly five seconds. Added RPPocket pre/post
+    sleep quirks that acquire a low-level `handle-power-key` inhibitor before
+    suspend and release it after resume plus a five-second grace period. This
+    prevents the wake key from being interpreted as another short suspend,
+    while retaining systemd as the action handler. A two-minute fallback avoids
+    a permanent inhibitor after a failed suspend. DWC2 unload/reload remains in
+    the existing stock-matching sleep framework.
+
+    Added `--power-slider-test`, which only verifies effective production
+    policy and emits the five-flash startup handshake; it does not initiate PM.
+    The generic broad debug hook recognizes its marker and exits before invasive
+    register/I2C capture. Build succeeds. Compiled/source verification confirms
+    all PM callback/watchdog instrumentation and ramoops are absent; the exact
+    stock policy and validated RK817/GPU fixes remain; and all three RPPocket
+    policy/quirk files are executable and byte-identical in the image.
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 150abc17861a35cd4e6424ff9568cb90e582999b89913d51925c934c87f36474
+        KERNEL SHA-256 593d20fdabfab14270c56756b82a4ad8fa86f837b53758b8ae402b3babee5cc3
+        SYSTEM SHA-256 7fed8a63671d72a9fb95e01308b3c24d3d436400a2ab815eccd868e7bf4c1ad9
+        RPPocket DTB SHA-256 d9986578ed39529bf569fe532ecab0ec3f6d17540516ff64abc4d6d48c5099fd
+        production gate script SHA-256 f68d2c3f6c77ea2b1bba60e0e6ddfa5e22c2496f2730381d2ef2ae3252ab6995
+        production gate service SHA-256 0cdebd1c5db153816e193dbaf4b724e7b87927aec27944245c67aaf1cbd1b1b9
+        isolated debug hook SHA-256 a4e007f953f4dab7d719fda78cf72e265e33afcb6cea94f3e4c7d07a8d45015e
+
+Next controlled experiment:
+    Flash this production-policy image with `--power-slider-test`. First test
+    exactly one normal short suspend and one short wake, then leave it awake
+    long enough to prove the wake event does not cause a second suspend. Inspect
+    effective logind properties, inhibitor lifecycle, kernel PM, sleep hooks,
+    and journals before testing the five-second long hold separately.
+
+Production short-action v1 returned-card result:
+    The startup gate consumed its marker and confirmed the live systemd policy:
+    HandlePowerKey=suspend, HandlePowerKeyLongPress=poweroff, GPU present,
+    rockchip-suspend bound, and the pre/post wake inhibitor installed. The user
+    observed the screen go black (backlight remained visibly on) after a brief
+    slider action and return after a second brief action.
+
+    Persistent messages prove complete pre/post hook traversal, including DWC2
+    unload/reload, for two suspend/resume cycles: 10:44:54--10:45:30 and
+    10:46:44--10:47:02 local time. The user confirmed that both cycles were
+    deliberate. The second KEY_POWER press occurred 74 seconds after the first
+    resume, proving that the wake event did not immediately trigger another
+    suspend. Both normal systemd-driven short suspend/resume cycles completed,
+    restored the display, and remained awake until the next intentional action.
+    No pstore record exists.
+
+        debug/rppocket-power-slider-short-v1-gate.log
+        SHA-256 68a5d1cdc807689dc6ff0cfda45c7080943ef4ba4a7c0f01f384b5dfc200759a
+        debug/rppocket-power-slider-short-v1-messages.log
+        SHA-256 28c347fa6bdb8623321c02807a126a2c76c9b5bbed35b7846a551bf7fefc2908
+        debug/rppocket-power-slider-short-v1-boot.log
+        SHA-256 7f55e807520b427ba3cea6217e42f4a08b5a101c9610b31056188581534dc4fa
+
+Backlight finding after production short-action v1:
+    During both successful deep-suspend intervals the LCD image was black, but
+    the user could clearly see the backlight remain powered. This is not an
+    acceptable production standby state because the backlight is a material
+    battery load.
+
+    The generic pwm-backlight suspend callback did run successfully, but its
+    power_off request could not disable the RK817 LDO1 consumer because the
+    current DTS incorrectly marked `backlight2v8_supply` both always-on and
+    boot-on. The exact v1.1.3 stock source and compiled DTB have neither
+    constraint and explicitly permit LDO1 off in mem suspend. As the isolated,
+    source-backed next variable, remove only regulator-always-on and
+    regulator-boot-on from RPPocket LDO1. Keep its pwm-backlight power-supply
+    relationship and regulator-off-in-suspend policy unchanged. Defer the
+    long-press test until one normal suspend proves the backlight fully dark and
+    brightness restores after wake.
+
+    Build succeeds. A sorted decompile comparison against the previously tested
+    production DTB proves the only compiled DT change is removal of those two
+    LDO1 booleans. The pwm-backlight consumer link, LDO1 mem-off state, exact
+    stock BL31 policy, production systemd policy, and all validated suspend
+    fixes remain.
+
+        target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 b7c028d489f0679dfe0b885180c565aa089b1e21daa2e9c4a89d81214ca1096a
+        KERNEL SHA-256 7b3dde04db47b0741797f1e37a6c848ed240a28cc309af54b95b1c0fd9c9bdb3
+        SYSTEM SHA-256 b67bd7474f6d1b1d480f222d5aad2f26c2fa1692d31b4c77bce00f8e00c3846f
+        RPPocket DTB SHA-256 7bc14101de7ddce861cd2e829a594156d37d655c9fcf3a7137c64328d4f8f450
+        production gate script SHA-256 f68d2c3f6c77ea2b1bba60e0e6ddfa5e22c2496f2730381d2ef2ae3252ab6995
+        isolated debug hook SHA-256 6e6ed6991e2aac1fbdc79a9967b87ccad886779b18bb84910f1221507f1e2d24
+
+Backlight suspend v1 result:
+    The user confirmed that the panel backlight was fully off in deep suspend
+    and that the previous brightness was restored on resume. The startup gate
+    again confirmed live short=suspend, long=poweroff policy, GPU presence,
+    rockchip-suspend binding, and wake-inhibitor installation. Persistent
+    messages contain complete pre/post sleep-hook traversal for three successful
+    suspend/resume cycles. The first two occurred on the marker-isolated boot
+    where the user confirmed backlight-off behavior. Pstore is empty. This
+    validates removal of the two incorrect LDO1 constraints.
+
+    The card also records a KEY_POWER press at 11:14:24 followed by a fresh boot
+    at 11:14:44, between the first two cycles and the third. The user confirmed
+    that all three cycles and the intervening reboot were intentional. The
+    marker had been consumed by then, so the old generic broad diagnostic ran on
+    that second boot and its exported journal contains repeated I2C STOP errors
+    before/after the third cycle. Treat that third cycle as diagnostic-
+    contaminated, not as clean reliability evidence. It does not invalidate the
+    two marker-isolated visual backlight results. Do not classify the reboot
+    interval as long-press evidence because it was outside the requested test.
+
+        debug/rppocket-backlight-suspend-v1-gate.log
+        SHA-256 6971b2d841072da4f8efac47c8abd633effdca5261286371f14a2368b3b4c5e3
+        debug/rppocket-backlight-suspend-v1-messages.log
+        SHA-256 1141092df574e31e0e89069f69bd595e3a87be8520e0fe5d671057b11f9b8e92
+        debug/rppocket-backlight-suspend-v1-boot.log
+        SHA-256 9970366250803f71a69cf7a34c4f7445d508ac9774ae0eed91a68a864cc8e485
+        debug/rppocket-backlight-suspend-v1-second-boot-dmesg.log
+        SHA-256 5cd80559af3b97d85a09dc65342c2efd378332e7022a01689bfaac78a39a5b90
+        debug/rppocket-backlight-suspend-v1-second-boot-journal.log
+        SHA-256 68147f0e67c848ee84862a2d631fadeaf82d54fc6eb0d7d52b168346ea784984
+
+Production long-press v1 preparation:
+    Added an isolated no-reflash harness for systemd's native five-second
+    HandlePowerKeyLongPress=poweroff path. At startup it gates on the live short
+    and long actions, GPU presence, bound rockchip-suspend driver, and packaged
+    wake inhibitor. Its active oneshot has RequiresMountsFor=/storage and an
+    ExecStop shutdown hook; an orderly systemd shutdown must therefore write a
+    persistent proof marker before storage unmount. It also exports the prior
+    and current boot journals to readable files. Marker isolation prevents the
+    broad register/I2C hook from running.
+
+    The prepared card was independently mounted read-only. Image artifacts are
+    byte-identical to the backlight-fixed build; the fresh marker, sole
+    rocknix.target link, script/service hashes, condition, mount ordering,
+    RemainAfterExit, ExecStop, absent stale proof/logs, and empty pstore all
+    verify. The card is authorized only for one continuous hold, released as
+    soon as shutdown visibly starts to avoid crossing into PMIC emergency reset.
+
+        harness=rppocket-production-power-slider-long-v1
+        long script SHA-256 fe645bee07ac9c9ccdc3dab8137eda2d971ea6d3339b930bbb13aa09144e31d8
+        long service SHA-256 d2401f69b08598337e548395839bd29e35d8fb77e4e60d59fd2d3c8473312b02
+        isolated debug hook SHA-256 6e6ed6991e2aac1fbdc79a9967b87ccad886779b18bb84910f1221507f1e2d24
+
+Production long-press v1 result:
+    Success. The key press arrived at monotonic 139.152223. systemd-logind logged
+    `Power key pressed long` at 144.234881 and `Powering off` at 144.237346:
+    5.082658 and 5.085123 seconds after initial press. No suspend transaction was
+    started. The active service's ordered ExecStop reached persistent storage at
+    approximately 5.73 seconds and explicitly proved entry into the systemd
+    shutdown transaction. The user released when shutdown began; the unit did
+    not reboot and pstore remains empty. The current journal is free of PM,
+    GPU-clock, I2C STOP, panic, or watchdog failures.
+
+        debug/rppocket-power-slider-long-v1-gate.log
+        SHA-256 c3c9595cfac763ff408ca8b2e1b382164d9c4fdda6304fcf3cb31f909f7ac7c5
+        debug/rppocket-power-slider-long-v1-orderly-shutdown.log
+        SHA-256 0d5ac557b147716f66782a842b1650f52dc780bf512f246f1ac0d6d134027f3f
+        debug/rppocket-power-slider-long-v1-journal.log
+        SHA-256 964d8a9f9f6640aae09d0633c663e429010ece5d09f855ee7991cd98a901adc0
+        debug/rppocket-power-slider-long-v1-messages.log
+        SHA-256 af4ed3544fcac7187084404e40078cbe3b0b0a86011a0c885ed436a8095b28a9
+        debug/rppocket-backlight-suspend-v1-prior-journal.log
+        SHA-256 497b1ead02b08da2b0724174ed5221f2bb53bfd64feca58c85b83ad757caccc8
+
+Ten-cycle reliability preparation:
+    `debug/pre.sh --power-slider-reliability-test` removes all old PM/slider
+    service links and the generic broad debug hook. The only active service is a
+    passive RemainAfterExit collector under rocknix.target; it neither initiates
+    PM nor runs a suspend hook, and exports the current journal only during an
+    orderly shutdown. The marker, empty output state, sole service link, absent
+    broad hook, unchanged image hashes, and empty pstore were independently
+    verified read-only before authorizing the boot.
+
+        harness: rppocket-production-power-slider-reliability-v1
+        script SHA-256 d9489c24d93377c3b83ae9177ce3f4ee804df3602e27b415b0ba1fa53aa574bd
+        service SHA-256 76058936d94ac0effbdf5db508a742dc2b192cd4525bbe6f7dfcd9be1fc7ea03
+
+Ten-cycle production reliability result:
+    Success. The user visually confirmed full backlight-off and normal restored
+    operation for all ten consecutive short suspend/resume cycles on one boot.
+    The passive journal contains exactly ten `PM: suspend entry (deep)` records,
+    ten suspend exits, ten completed systemd-suspend transactions, and twenty
+    short power-key records (one entry and one wake event per cycle), with no
+    extra suspend caused by wake-event replay. Every cycle stopped/reloaded DWC2,
+    offlined/restarted CPUs 1-3, and restored the panel. The messages log has ten
+    complete pre/post hook traversals for this boot. Software shutdown reached
+    the collector's orderly-shutdown hook. Pstore is empty, and there are no PM,
+    RK817, I2C STOP, GPU-clock, panic, or watchdog failures. The only watchdog
+    match is the normal ROCKNIX sysctl attempt for unavailable nmi_watchdog.
+
+        debug/rppocket-power-slider-reliability-v1-gate.log
+        SHA-256 7dc0aef01616212a8a6f5112cdc4861bb56b812653883dce521ad132e6db1816
+        debug/rppocket-power-slider-reliability-v1-orderly-shutdown.log
+        SHA-256 c0b41144648c9238cf480fed280b65e69a0c4b16da61ef887fe26182dad322dc
+        debug/rppocket-power-slider-reliability-v1-journal.log
+        SHA-256 7648ea9b836f77ebbd6da8a0521fd81ead4e3247e0e324b19195161e627c8357
+        debug/rppocket-power-slider-reliability-v1-messages.log
+        SHA-256 6609284ff8acc3af8fa68ff93de10c988deb35447d8194958f8bb828e79bad6b
+
+Conclusion:
+    Production short suspend/resume, wake-event suppression, complete backlight
+    power-off/restore, and native five-second orderly poweroff are validated.
+    Remove the passive storage-side collector, review the final production diff,
+    and commit the validated implementation.
+
+Follow-up screen-off latency observation:
+    After the ten-cycle pass, the user reported that resume appears immediate but
+    a short suspend press leaves the screen lit for almost five seconds. The
+    captured journal explains the delay: logind accepted the first suspend at
+    128.124864, but the kernel did not enter deep suspend until 131.400156. The
+    same interval was 306.795748 to 310.064348 on cycle ten. Roughly 3.3 seconds
+    are intentional pre-sleep Wi-Fi pinning/disable, service stop, DWC2 unload,
+    and inhibitor preparation; the panel PM callback cannot blank until those
+    complete.
+
+    Isolated candidate: install an RPPocket-only Type=notify service ordered
+    before sleep.target. It writes zero to the existing pwm-backlight brightness
+    as soon as systemd accepts suspend, then waits on the kernel's
+    suspend_stats/success counter. The process freezes with userspace and
+    restores the exact raw brightness immediately when thawed, before slower
+    post-resume Wi-Fi/USB work. A 15-second fallback and signal trap restore the
+    light if suspend aborts. This changes perceived blanking latency only; it
+    deliberately preserves the proven deep-suspend preparation sequence.
+
+        projects/ROCKNIX/packages/hardware/quirks/devices/
+            FunnyPlaying RetroPixel Pocket/002-fast-suspend-backlight
+
+    The generated helper passed a mocked zero/restore cycle and the generated
+    unit passed systemd-analyze verification. The candidate built successfully
+    and is present byte-for-byte and executable in the generated image root.
+
+        image: target/ROCKNIX-RK3326.aarch64-20260803-a.img.gz
+        SHA-256 0a4f2782937ce588b73110886bff5f2fc2cff15a3c0a292546e4372d9883a32b
+        candidate SHA-256 021512f80df8e8ccc626cf71c06d9556fd5243491b4841915c0dcd107aa3fc5e
+        KERNEL SHA-256 7b3dde04db47b0741797f1e37a6c848ed240a28cc309af54b95b1c0fd9c9bdb3
+        DTB SHA-256 7bc14101de7ddce861cd2e829a594156d37d655c9fcf3a7137c64328d4f8f450
+
+    Isolated hardware result: success. The user reported that screen-off felt
+    instant and brightness restored normally and remained stable on resume. The
+    physical key event was logged at 159.215701, logind accepted suspend at
+    159.479115, and the Type=notify unit reported ready at 159.793778 only after
+    writing zero brightness. Thus confirmed blanking occurred no later than
+    0.578 seconds after the physical event (0.315 seconds after logind accepted
+    suspend), while the preserved deep entry continued at 163.381912. The helper
+    restored brightness and exited 0.789 seconds after PM exit, while the normal
+    post-resume work was still running. The cycle completed deep entry/exit,
+    CPU restart, panel restore, and DWC2 unload/reload, followed by orderly
+    software shutdown. No PM, RK817, I2C, GPU-clock, unit, panic, watchdog, or
+    pstore failures were present.
+
+        debug/rppocket-power-slider-fast-backlight-v1-gate.log
+        SHA-256 bf8f42e889221e66c090b557a7138d7c946ee266d24c1ed94d73f6774b754b51
+        debug/rppocket-power-slider-fast-backlight-v1-orderly-shutdown.log
+        SHA-256 3b77b7ceb1751e0055f24f97fa692c1cbfc8808619d4a5f2656a156aa0d4b552
+        debug/rppocket-power-slider-fast-backlight-v1-journal.log
+        SHA-256 d680f482206cc677256bf914e246e5cfb908d225728a5fa029df3c4a7e4c8b07
+        debug/rppocket-power-slider-fast-backlight-v1-messages.log
+        SHA-256 f0c55d5652869dcde6db2b5594653e7fb31d6221e8dded2d9ec9bd24705745d5
+
+    The latency candidate is now accepted and may be staged with the previously
+    validated production implementation.
+
+First returned-card observation is invalid as a PM/watchdog test:
+    The boot artifacts exactly match the hardware-watchdog candidate, but none
+    of the files installed by `debug/pre.sh --pm-test-devices-no-gpu` exist:
+    no service, script, one-shot/pending/mode marker, PM log, 000 debug hook,
+    pstore directory, or pstore-status file. STORAGE contains only normal
+    first-boot initialization from about 11:36-11:37. Consequently the direct
+    PM test never ran and `/dev/watchdog0` was never opened. The permanently
+    black display is expected from this diagnostic image's disabled GPU and
+    does not show a watchdog failure. Reinstall the hooks without reflashing
+    the already-correct image, then rerun.
+
+
+Phase 1 - Preserve and classify the current failure
+---------------------------------------------------
+First inspect the already-reported failure before changing an image. When
+the current SD card is available, read its persistent journal directly and
+look for:
+
+    - "Power key pressed short" from logind
+    - systemd-suspend start and the ROCKNIX pre-sleep hook
+    - "PM: suspend entry" and the selected mem_sleep state
+    - any suspend abort/error
+    - "PM: suspend exit" and the ROCKNIX post-sleep hook
+    - a clean reboot request versus an abrupt next boot after the long hold
+
+Capture the following before another suspend attempt:
+
+    - non-grabbing KEY_POWER press/release timestamps
+    - /proc/bus/input/devices and udev power-switch tags
+    - /proc/interrupts for the RK817 parent and pwrkey nested IRQs
+    - /sys/kernel/debug/wakeup_sources
+    - the RK817 and rk805-pwrkey power/wakeup sysfs files
     - /sys/power/state and /sys/power/mem_sleep
-    - logind effective HandlePowerKey setting
-    - journal and dmesg across suspend/resume or the following boot
-    - whether display, audio, input, Wi-Fi, and timekeeping recover
+    - effective systemd sleep and logind configuration
+    - active inhibitor locks
 
-Test one action per boot where possible:
-
-    1. Quick slide/release while running.
-    2. Slider action after the device visibly suspends.
-    3. Five second hold while running.
-    4. Slider action from orderly powered-off state.
-    5. Emergency hold only after the normal paths are understood.
+Use persistent pre/post markers with sync so a forced reset still tells us
+whether post-resume userspace ever ran. Do not use evtest --grab; it can
+steal the only wake/policy input and create a false failure.
 
 Decision gate:
-    Do not add a userspace daemon if suspend itself fails or the wake IRQ
-    never reaches Linux. Do not change firmware configuration until the
-    input and wakeup-source evidence is captured.
+
+    - suspend entry with no exit means wake or firmware is the first issue
+    - suspend exit plus SSH/ping/audio but a black panel means display
+      resume is the first issue
+    - an error before suspend entry means fix that driver/hook first
+    - no logind action means fix input/udev/userspace policy first
 
 
-Phase 2 - Fix suspend wake at the narrowest kernel layer
---------------------------------------------------------
-Hypothesis:
-    RK817 is marked wake-capable, but the pwrkey child driver has not
-    assigned its falling IRQ as the device wake IRQ.
+Phase 2 - Try the safe suspend-state matrix without rebuilding
+--------------------------------------------------------------
+Use EmulationStation's Device Suspend Mode setting and test one state per
+boot. Start with freeze, then standby only if the kernel exposes it. Leave
+the currently failing mem test until last.
 
-First candidate:
-    Backport the minimal rk805-pwrkey dev_pm_set_wake_irq() change into
-    the RK3326 patch series, including linux/pm_wakeirq.h. Build, inspect
-    the applied source and DTB, then test only suspend entry and slider
-    wake.
+For each state:
 
-Acceptance:
-    At least ten suspend/resume cycles wake from the slider without an
-    unintended reboot. Display, audio, controls, Wi-Fi, and storage
-    recover after every cycle.
+    1. short slide/release while running
+    2. wait five seconds after the display goes dark
+    3. short slide/release to wake
+    4. check display, controls, audio, Wi-Fi, clock, and running game state
+    5. if the panel stays black, check ping/SSH or audio before forcing reset
 
-Fallback only if the candidate fails:
-    Compare the working stock image's PMIC IRQ and suspend path before
-    expanding the change. Check wake-enable state in the RK808/RK817 MFD
-    IRQ domain, PMIC interrupt masks, GPIO0 PB2 parent IRQ wake state,
-    and BL31 wake reason. Determine whether RPPocket needs a board
-    rockchip-suspend node or firmware SIP configuration; do not copy the
-    GKD Pixel2 values without stock RPPocket evidence.
+If freeze wakes reliably, it is a useful immediate fallback: add a
+FunnyPlaying device suspend-mode quirk that defaults new installs to
+freeze while preserving the user's ability to override it. Freeze is
+suspend-to-idle and will save less power than working mem/deep suspend, so
+it is a safe interim behavior, not the final deep-standby result.
 
-
-Phase 3 - Confirm short-action userspace policy
------------------------------------------------
-Hypothesis:
-    Once wake is reliable, existing logind HandlePowerKey=suspend is
-    sufficient for short slider actions.
-
-Verification:
-    Confirm exactly one suspend request per physical action, no immediate
-    resume loop from the release edge, and no duplicate handling by
-    EmulationStation or another input consumer. Prefer the existing
-    ROCKNIX sleep hooks and quirk framework over a device-only daemon.
-
-Change only if required:
-    Add a FunnyPlaying device quirk for suspend mode or input filtering.
-    Keep the behavior device-scoped and preserve normal KEY_POWER
-    semantics for other RK3326 boards.
+If supported, use an RK817 RTC wake alarm for one controlled mem attempt.
+An RTC resume with no slider resume isolates the pwrkey wake path; failure
+to resume from either source points instead at platform/BL31 suspend.
 
 
-Phase 4 - Implement orderly long-hold shutdown
-----------------------------------------------
-Hypothesis:
-    A five second held KEY_POWER event can be distinguished in userspace
-    before the PMIC emergency timeout cuts power.
+Phase 3 - Fix mem/deep wake one variable at a time
+--------------------------------------------------
+Choose the first candidate from the Phase 1/2 evidence; do not apply both
+at once.
 
-Characterization gate:
-    First measure whether the press remains asserted, whether repeats are
-    emitted, and the exact time until any PMIC hard cutoff. If hardware
-    removes power before five seconds, orderly shutdown at that threshold
-    is not achievable without changing PMIC timeout configuration.
+Candidate A - restore the stock RPPocket BL31 configuration:
 
-Implementation preference:
-    Extend an existing ROCKNIX power-button handler if one owns long-press
-    policy at that point. Otherwise add a small device-scoped systemd
-    service that reads only the rk805 pwrkey device, starts a monotonic
-    timer on KEY_POWER press, cancels it on release, and calls systemctl
-    poweroff at the chosen threshold. It must not inhibit logind's short
-    action or consume unrelated input devices.
+    Add a board-local rockchip-suspend node to
+    rk3326-funnyplaying-rppocket.dts using the exact vendor DTB values:
 
-Acceptance:
-    - release before threshold suspends but does not power off
-    - hold through threshold reaches systemd poweroff and syncs storage
-    - no double suspend/poweroff race
-    - charging and non-charging cases behave consistently
-    - the PMIC emergency cutoff still works when userspace is wedged
+        compatible = "rockchip,pm-px30"
+        sleep-mode-config = <132866>
+        wakeup-config = <133>
+
+    Use sleep-debug-en=<1> for the stock-matching diagnostic trial if its
+    output is useful, then disable debug in the production result unless it
+    is required. The already-built ROCKCHIP_PM_CONFIG driver will forward
+    the values to BL31. This is preferred first if freeze/key wake works but
+    mem does not, because the working-stock DTB contains this node and the
+    current RPPocket DTB does not.
+
+Candidate B - bind the pwrkey falling IRQ as a wake IRQ:
+
+    Backport the minimal rk805-pwrkey dev_pm_set_wake_irq() change into the
+    RK3326 patch series, including linux/pm_wakeirq.h and error handling.
+    This is preferred first if even freeze shows that the pwrkey interrupt
+    is not treated as a wake event. Confirm that the nested regmap IRQ
+    propagates wake enable to the GPIO0 PB2 parent IRQ.
+
+For either candidate:
+
+    - build with make docker-RK3326
+    - inspect the applied kernel source
+    - decompile the built RPPocket DTB and verify only the intended nodes
+    - flash manually with debug/pre.sh; never use SDWire
+    - test only suspend entry and one slider wake before broader testing
+    - reinsert the SD and inspect persistent logs before the next change
+
+Fallback only if both isolated candidates fail:
+
+    - boot the copied stock debug image and first confirm stock short
+      suspend/wake really works
+    - compare stock and ROCKNIX RK817 interrupt masks and status registers
+    - compare nested pwrkey IRQ wake enable and GPIO0 PB2 parent IRQ state
+    - inspect BL31/ATF versions and wake reasons
+    - compare PMIC sleep pin state and regulator state at suspend entry
+
+Do not copy additional values from another handheld. The exact RPPocket
+vendor DTB and stock runtime are the oracle.
 
 
-Phase 5 - Poweroff and cold-boot validation
+Phase 4 - Validate resume quality and latency
+---------------------------------------------
+After a candidate wakes once, require at least ten consecutive cycles.
+For every cycle verify:
+
+    - no unintended reboot and no immediate re-suspend loop
+    - display and backlight recover at the expected brightness
+    - controls, audio, Wi-Fi, clock, and storage recover
+    - an emulator/game resumes without lost state
+    - wake reason and IRQ counts identify the slider
+
+Measure visible press-to-dark and press-to-image latency. Then do a longer
+suspend and compare battery drain for freeze versus mem so the chosen
+default is based on both reliability and power savings.
+
+
+Phase 5 - Finalize short/long userspace semantics
+-------------------------------------------------
+Only after wake is reliable, add a FunnyPlaying-specific logind quirk:
+
+    HandlePowerKey=suspend
+    HandlePowerKeyLongPress=poweroff
+
+The existing systemd five-second timer should distinguish the actions:
+
+    - release before five seconds: suspend on release
+    - hold through five seconds: orderly systemd poweroff
+
+Verify exactly one action per physical slide, no duplicate handling by
+input_sense/EmulationStation, no release-edge resume loop, and no race
+between suspend and poweroff. Preserve the PMIC emergency cutoff/reset for
+cases where Linux is wedged.
+
+
+Phase 6 - Poweroff and cold-boot validation
 -------------------------------------------
-Verify after an orderly shutdown:
+After orderly shutdown verify:
 
     - PMIC power-off pinctrl is selected
     - rails and display actually turn off rather than entering suspend
@@ -164,21 +1578,25 @@ Verify after an orderly shutdown:
     - repeated poweroff/powerup cycles do not become a reboot loop
 
 Cold boot is primarily PMIC and bootloader behavior. Do not add Linux
-userspace workarounds unless evidence shows Linux left the PMIC in the
+userspace workarounds unless evidence shows Linux leaves the PMIC in the
 wrong power-off state.
 
 
-Test and documentation discipline
----------------------------------
+Acceptance and documentation discipline
+---------------------------------------
+The short-action feature is accepted only after ten reliable cycles and
+one longer soak with display, controls, audio, Wi-Fi, timekeeping, running
+game, and storage all intact. The final policy must retain orderly
+five-second shutdown and emergency PMIC cutoff.
+
 For each hardware image record:
 
-    - hypothesis
-    - exact patch or configuration change
+    - hypothesis and one changed variable
     - image name and SHA-256
-    - exact action requested
-    - observed input events, wake source, journal, and visible result
+    - exact requested action
+    - input events, wake source, journal, and visible result
     - decision and next single change
 
-Always build and decompile the RPPocket DTB before requesting a flash.
-Use manual debug/pre.sh flashing; do not use SDWire. Preserve unrelated
-working input, display, audio, Wi-Fi, and PICO-8 behavior throughout.
+Keep active results here until resolved; update debug/current_state.txt
+only when behavior becomes accepted project state. Do not commit a
+hardware-facing change until the user confirms it works.

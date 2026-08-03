@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+# Release the pre-sleep power-key inhibitor after the wake event is safely past
+# logind. The inhibitor itself remains active for a short grace period.
+
+RUNDIR=/run/rppocket-power-key-wake
+mkdir -p "$RUNDIR"
+touch "$RUNDIR/release"

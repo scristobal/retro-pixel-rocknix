@@ -1,0 +1,37 @@
+soc: rockchip: leave RPPocket GPU device clock under Mali ownership
+
+Patch 024 excludes the PX30S GPU domain from GENPD_FLAG_PM_CLK because
+Rockchip genpd and mali_kbase otherwise both manage the GPU device's single
+"bus" clock. The RPPocket uses the same Rockchip power domain and proprietary
+Mali driver arrangement, but reports the source-confirmed machine compatible
+"funnyplaying,rppocket" rather than matching soc_is_px30s().
+
+A complete RPPocket freeze/resume cycle after fixing the unrelated RK817
+suspend blocker captured the exact resulting fault in both noirq directions:
+
+    Enabling unprepared clk_gpu
+    rockchip-pm-domain ... failed to enable clocks
+    mali ff400000.gpu: __pm_clk_enable: failed ... error -108
+
+The stack was genpd_suspend_noirq()/genpd_resume_noirq() through pm_clk while
+mali_kbase also directly uses clk_prepare_enable()/clk_disable_unprepare().
+Extend only patch 024's single-clock-owner exception to this machine. Do not
+apply its separate PX30S keep-domain-powered-on workaround to the RPPocket.
+
+--- a/drivers/pmdomain/rockchip/pm-domains.c
++++ b/drivers/pmdomain/rockchip/pm-domains.c
+@@ -807,9 +807,12 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
+ 	 * refcount desync happens independently of whether the domain's
+ 	 * hardware power state ever actually toggles). Skip
+ 	 * GENPD_FLAG_PM_CLK for this domain so mali_kbase remains the
+-	 * sole manager of its own clock.
++	 * sole manager of its own clock. The RPPocket has the same ownership
++	 * arrangement but identifies as RK3326 rather than PX30S.
+ 	 */
+-	if (soc_is_px30s() && pd->genpd.name && !strcmp(pd->genpd.name, "gpu"))
++	if ((soc_is_px30s() ||
++	     of_machine_is_compatible("funnyplaying,rppocket")) &&
++	    pd->genpd.name && !strcmp(pd->genpd.name, "gpu"))
+ 		pd->genpd.flags = 0;
+ 	else
+ 		pd->genpd.flags = GENPD_FLAG_PM_CLK;

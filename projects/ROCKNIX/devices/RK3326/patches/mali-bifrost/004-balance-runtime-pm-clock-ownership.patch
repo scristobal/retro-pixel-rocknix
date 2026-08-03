@@ -1,0 +1,39 @@
+midgard: balance runtime PM clock ownership
+
+The generic devicetree runtime-PM callbacks use __clk_is_enabled() to decide
+whether Mali should acquire or release its clock. That helper reports the
+global hardware gate state, not whether this consumer owns an enable
+reference. On RK3326 the GPU clock can remain physically enabled through its
+CLK_IGNORE_UNUSED child clocks after Mali releases its own reference. This
+causes a warning after a correctly balanced disable and can make the next
+power-on path skip acquiring Mali's reference.
+
+power_control_init() already enables every clock once to match the first
+runtime suspend. Keep ownership balanced after that: acquire one reference on
+every Mali power-on callback and release one on every power-off callback.
+This mirrors patch 003's regulator fix and avoids using global clock state as
+consumer ownership state.
+
+--- a/product/kernel/drivers/gpu/arm/midgard/platform/devicetree/mali_kbase_runtime_pm.c
++++ b/product/kernel/drivers/gpu/arm/midgard/platform/devicetree/mali_kbase_runtime_pm.c
+@@ -46,7 +46,7 @@ static void enable_gpu_power_control(struct kbase_device *kbdev)
+ 	for (i = 0; i < kbdev->nr_clocks; i++) {
+ 		if (WARN_ON(kbdev->clocks[i] == NULL))
+ 			;
+-		else if (!__clk_is_enabled(kbdev->clocks[i]))
++		else
+ 			WARN_ON(clk_prepare_enable(kbdev->clocks[i]));
+ 	}
+ }
+@@ -58,10 +58,8 @@ static void disable_gpu_power_control(struct kbase_device *kbdev)
+ 	for (i = 0; i < kbdev->nr_clocks; i++) {
+ 		if (WARN_ON(kbdev->clocks[i] == NULL))
+ 			;
+-		else if (__clk_is_enabled(kbdev->clocks[i])) {
++		else
+ 			clk_disable_unprepare(kbdev->clocks[i]);
+-			WARN_ON(__clk_is_enabled(kbdev->clocks[i]));
+-		}
+ 	}
+ 
+ #if defined(CONFIG_REGULATOR)

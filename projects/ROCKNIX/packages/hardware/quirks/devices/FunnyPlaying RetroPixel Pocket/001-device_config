@@ -19,3 +19,14 @@ DEVICE_BATTERY_LED_STATUS="false"
 DEVICE_TEMP_SENSOR="/sys/devices/virtual/thermal/thermal_zone0/temp"
 DEVICE_MMC_EJECT="false"
 EOF
+
+# Keep this policy scoped to the RPPocket while using systemd-logind's native
+# five-second long-press timer. A short release suspends; holding the PMIC power
+# key for five seconds requests an orderly poweroff.
+mkdir -p /run/systemd/logind.conf.d
+cat <<EOF >/run/systemd/logind.conf.d/50-rppocket-power-key.conf
+[Login]
+HandlePowerKey=suspend
+HandlePowerKeyLongPress=poweroff
+EOF
+systemctl reload systemd-logind.service 2>/dev/null || true
