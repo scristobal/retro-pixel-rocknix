@@ -3,10 +3,12 @@
 
 PKG_NAME="vulkan-wsi-layer"
 PKG_VERSION="8f077c5c862e5259841d524de8280b8c2429990a"
+PKG_SHA256="cd45a40c476e59557385c334f4266b62b05c73e50d725d4a464b7dc44ca61de8"
 PKG_LICENSE="MIT"
 PKG_SITE="https://gitlab.freedesktop.org/mesa/vulkan-wsi-layer"
 PKG_URL="${PKG_SITE}/-/archive/${PKG_VERSION}.tar.gz"
 PKG_DEPENDS_TARGET="toolchain libdrm wayland-protocols ${VULKAN}"
+PKG_DEPENDS_UNPACK="linux"
 PKG_LONGDESC="Implements Vulkan extensions for Window System Integration inside a Vulkan layer."
 PKG_TOOLCHAIN="cmake"
 
@@ -14,6 +16,8 @@ pre_configure_target() {
 if [ "${DEVICE}" = "RK3588" ]; then
   #BSP name?, probably can be removed when moving to mainline
   HEAP_NAME=cma
+elif [ "${DEVICE}" = "RK3566" ]; then
+  HEAP_NAME=system
 else
   HEAP_NAME=linux,cma
 fi

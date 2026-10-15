@@ -1,28 +1,42 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
-# Copyright (C) 2025-present ROCKNIX (https://github.com/ROCKNIX)
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (C) 2024-present ROCKNIX (https://github.com/ROCKNIX)
 
 PKG_NAME="armsx2-sa"
-PKG_VERSION="37ce96996c56cf9e3d635e7f4f36b987fbd4197a"
-PKG_LICENSE="GPLv3"
+PKG_VERSION="19c83bf065ed21a19d8c46a1f578e37d2dab8efd"
+PKG_SHA256="361b98beb943976f6c0ec5494eba26ded04abcd41683149c74317e089b3ff860"
+PKG_LICENSE="GPL-3.0-or-later"
 PKG_SITE="https://github.com/ARMSX2/ARMSX2"
 PKG_URL="${PKG_SITE}/archive/${PKG_VERSION}.tar.gz"
 PKG_LONGDESC="ARMSX2 is a native ARM64 PlayStation 2 (PS2) emulator, a fork of PCSX2 that ports the EE/IOP/VU JIT recompilers to ARM64."
-PKG_DEPENDS_TARGET="toolchain llvm:host SDL3 libpng zlib libjpeg-turbo zstd lz4 libwebp freetype plutosvg curl libpcap ffmpeg libX11 libXext qt6 shaderc"
+PKG_DEPENDS_TARGET="toolchain llvm:host SDL3 libpng zlib libjpeg-turbo zstd lz4 libwebp freetype plutosvg curl libpcap ffmpeg libX11 libXext qt6 shaderc ecm"
 PKG_TOOLCHAIN="manual"
 PKG_BUILD_FLAGS="speed"
 
 PATCHES_URL="https://github.com/PCSX2/pcsx2_patches/archive/refs/tags/latest.zip"
 
 get_graphicdrivers
-  if listcontains "${GRAPHIC_DRIVERS}" "(panfrost)"; then
-    GRAPHICS_DRIVER="panfrost"
-  elif listcontains "${GRAPHIC_DRIVERS}" "(freedreno)"; then
-    GRAPHICS_DRIVER="freedreno"
-  fi
+
+if listcontains "${GRAPHIC_DRIVERS}" "(panfrost)"; then
+  GRAPHICS_DRIVER="panfrost"
+elif listcontains "${GRAPHIC_DRIVERS}" "(freedreno)"; then
+  GRAPHICS_DRIVER="freedreno"
+fi
+
+# Ship ARMSX2's own Turnip build on the Adreno 6xx/7xx families. SM8750
+# (Adreno 8xx) keeps the system driver.
+case ${DEVICE} in
+  SM4450|SM6115|SM8250|SM8550|SM8650)
+    PKG_DEPENDS_TARGET+=" armsx2-turnip"
+    ;;
+esac
 
 pre_configure_target() {
   PCSX2_CMAKE_BASE=(
+    # Reported version
+    -DARMSX2_VERSION=2.7.1
     -DCMAKE_BUILD_TYPE=Release
+    # Release builds don't need the unit tests or the recompiler test hooks
+    -DENABLE_TESTS=OFF
     # Full-tree IPO stays off for Qt (not worth it)...
     -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
     # ...but stays on for just the recompiler/VU/EE/IOP core:
@@ -43,6 +57,13 @@ pre_configure_target() {
   done
 }
 
+pre_make_target() {
+  for _f in "${SYSROOT_PREFIX}"/usr/lib/*.o "${SYSROOT_PREFIX}"/usr/lib/*.a; do
+    [ -f "${_f}" ] || continue
+    "${TOOLCHAIN}/bin/llvm-strip" --strip-debug "${_f}" 2>/dev/null || true
+  done
+}
+
 make_target() {
   mkdir -p "${PKG_BUILD}/.${TARGET_NAME}"
   cd "${PKG_BUILD}/.${TARGET_NAME}"
@@ -59,9 +80,9 @@ make_target() {
     -DCMAKE_CXX_COMPILER_AR="${TOOLCHAIN}/bin/llvm-ar"
     -DCMAKE_C_COMPILER_RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
     -DCMAKE_CXX_COMPILER_RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
-    -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld"
-    -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld"
-    -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld"
+    -DCMAKE_EXE_LINKER_FLAGS_INIT="-fuse-ld=lld -Wl,--strip-debug"
+    -DCMAKE_MODULE_LINKER_FLAGS_INIT="-fuse-ld=lld -Wl,--strip-debug"
+    -DCMAKE_SHARED_LINKER_FLAGS_INIT="-fuse-ld=lld -Wl,--strip-debug"
     -DCMAKE_SYSTEM_NAME=Linux
     -DCMAKE_SYSTEM_PROCESSOR=${TARGET_ARCH}
     -DCMAKE_C_COMPILER_TARGET=${TARGET_NAME}
@@ -85,35 +106,24 @@ make_target() {
 
 makeinstall_target() {
   mkdir -p ${INSTALL}/usr/bin
-  cp -rf ${PKG_DIR}/scripts/* ${INSTALL}/usr/bin
-  chmod 755 ${INSTALL}/usr/bin/*
+    cp -a ${PKG_DIR}/scripts/* ${INSTALL}/usr/bin
 
   mkdir -p ${INSTALL}/usr/share/armsx2-sa
-  cp -rf ${PKG_BUILD}/.${TARGET_NAME}/bin/* ${INSTALL}/usr/share/armsx2-sa
+    cp -a ${PKG_BUILD}/.${TARGET_NAME}/bin/* ${INSTALL}/usr/share/armsx2-sa
 
   mkdir -p ${INSTALL}/usr/config
-  cp -rf ${PKG_DIR}/config/common/ARMSX2 ${INSTALL}/usr/config
-
-  case ${DEVICE} in
-    S922X)
-      cp -rf ${PKG_DIR}/config/S922X/ARMSX2 ${INSTALL}/usr/config
-    ;;
-    *)
-      cp -rf ${PKG_DIR}/config/inputplumber/ARMSX2 ${INSTALL}/usr/config
-    ;;
-  esac
+    cp -a ${PKG_DIR}/config/common/ARMSX2 ${INSTALL}/usr/config
+    case ${DEVICE} in
+      S922X) cp -a ${PKG_DIR}/config/S922X/ARMSX2 ${INSTALL}/usr/config ;;
+      *) cp -a ${PKG_DIR}/config/inputplumber/ARMSX2 ${INSTALL}/usr/config ;;
+    esac
 }
 
 post_install() {
+  GRAPHICS=""
   case ${GRAPHICS_DRIVER} in
-    panfrost)
-      GRAPHICS="export MESA_GL_VERSION_OVERRIDE=3.3 MESA_GLSL_VERSION_OVERRIDE=330"
-    ;;
-    *)
-      GRAPHICS=""
-    ;;
+    panfrost) GRAPHICS="export MESA_GL_VERSION_OVERRIDE=3.3 MESA_GLSL_VERSION_OVERRIDE=330" ;;
   esac
 
-  sed -e "s/@GRAPHICS@/${GRAPHICS}/g" \
-        -i ${INSTALL}/usr/bin/start_armsx2.sh
+  sed -e "s/@GRAPHICS@/${GRAPHICS}/g" -i ${INSTALL}/usr/bin/start_armsx2.sh
 }

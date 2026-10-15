@@ -122,8 +122,8 @@ required by the board's validated RK817 sequencing patch.
 +					     "failed to initialize RK817 pinctrl\n");
 +	}
 +
- 	if (device_property_read_bool(dev, "rockchip,system-power-controller") ||
- 	    device_property_read_bool(dev, "system-power-controller")) {
+ 	if (device_property_read_bool(dev, "system-power-controller") ||
+ 	    device_property_read_bool(dev, "rockchip,system-power-controller")) {
  		ret = devm_register_sys_off_handler(dev,
 @@ -831,6 +922,11 @@
  					 RK817_SYS_CFG(3),

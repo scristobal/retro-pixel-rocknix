@@ -37,6 +37,13 @@ tmpdir=$(mktemp -d)
 
 while IFS=$'\x1f' read -r subject author commit_hash; do
   [[ -z "$subject" ]] && continue
+  github_username=""
+  if command -v gh >/dev/null 2>&1 && [[ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]]; then
+    github_username=$(gh api "repos/ROCKNIX/distribution/commits/${commit_hash}" --jq '.author.login // empty' 2>/dev/null || true)
+  fi
+  if [[ -n "${github_username}" ]]; then
+    author="@${github_username}"
+  fi
   short_hash="${commit_hash:0:7}"
   line="- ${subject} (${author}) ([${short_hash}](https://github.com/ROCKNIX/distribution/commit/${commit_hash}))"
   category="🔩 Other"
@@ -47,7 +54,7 @@ while IFS=$'\x1f' read -r subject author commit_hash; do
     revert*)
       category="↩️ Reverts" ;;
     # Kernel & Boot
-    linux|u-boot*|kernel*|dtc|dt-overlays|rkbin|atf|mkbootimg|grub|syslinux|amlogic-boot-fip|exynos-boot-fip|crust|bootloader|installer|qcom-abl|rocknix-abl|device-tree-overlays|mali-bifrost|rocknix-joypad|dtbocfg|generic-dsi|ap6256-firmware|ap6611s-firmware|esp8089-firmware|extra-firmware|g610-mali-csffw|ibt-firmware|iwlwifi-firmware|kernel-firmware|rtl8188fu-firmware|rtl8812au|rtl8814au|rtl8821au|rtl8821cu|rtl8851bu|rtl88x2bu|rtw88|arm-efi|patches|linux-drivers|linux-firmware|abl)
+    linux|u-boot*|kernel*|dtc|dt-overlays|rkbin|atf|mkbootimg|grub|syslinux|amlogic-boot-fip|exynos-boot-fip|crust|bootloader|installer|qcom-abl|rocknix-abl|openabl|device-tree-overlays|mali-bifrost|rocknix-joypad|dtbocfg|generic-dsi|ap6256-firmware|ap6611s-firmware|esp8089-firmware|extra-firmware|g610-mali-csffw|ibt-firmware|iwlwifi-firmware|kernel-firmware|rtl8188fu-firmware|rtl8812au|rtl8814au|rtl8821au|rtl8821cu|rtl8851bu|rtl88x2bu|rtw88|arm-efi|patches|linux-drivers|linux-firmware|abl)
       category="🐧 Kernel & Boot" ;;
     # Emulators & Frontend
     *-sa|*-lr|retroarch|emulationstation|gamecontrollerdb|rocknix-systems|hypseus*|openbor*|pico-8*|heroic*|amiberry*|mednafen*|steam*|box64|box86|fex-emu|wine|portmaster*|moonlight*|lowerdeck*|themes*|es-themes*|oga*|m8c*|supersnes9x|pcsx2)
@@ -65,7 +72,7 @@ while IFS=$'\x1f' read -r subject author commit_hash; do
     connman|iwd|networkmanager|bluez|openssh|samba|nfs*|avahi|syncthing|rclone|tailscale|zerotier*|wireguard*|openvpn|sixaxis|iw|iptables|wsdd2|wireless-regdb|libpcap|enet|libndp|libnl|libtirpc|libssh|nss-mdns|ap6611s|simple-http-server|fping|speedtest-cli|curl|libslirp|wifi)
       category="🌐 Network" ;;
     # Device Support
-    h700*|rk3326*|rk3399*|rk3566*|rk3576*|rk3588*|s922x*|sm6115*|sm8250*|sm8550*|sm8650*|sm8750*|amd64*|quirks)
+    h700*|rk3326*|rk3399*|rk3566*|rk3576*|rk3588*|s922x*|sm6115*|sm4450*|sm8250*|sm8550*|sm8650*|sm8750*|amd64*|quirks)
       category="📱 Device Support" ;;
     # CI & Workflows
     ci|workflows|validate-commit)

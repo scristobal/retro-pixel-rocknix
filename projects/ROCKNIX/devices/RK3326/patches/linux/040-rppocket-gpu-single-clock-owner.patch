@@ -21,7 +21,7 @@ apply its separate PX30S keep-domain-powered-on workaround to the RPPocket.
 
 --- a/drivers/pmdomain/rockchip/pm-domains.c
 +++ b/drivers/pmdomain/rockchip/pm-domains.c
-@@ -807,9 +807,12 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
+@@ -943,9 +943,12 @@ static int rockchip_pm_add_one_domain(struct rockchip_pmu *pmu,
  	 * refcount desync happens independently of whether the domain's
  	 * hardware power state ever actually toggles). Skip
  	 * GENPD_FLAG_PM_CLK for this domain so mali_kbase remains the
@@ -33,6 +33,6 @@ apply its separate PX30S keep-domain-powered-on workaround to the RPPocket.
 +	if ((soc_is_px30s() ||
 +	     of_machine_is_compatible("funnyplaying,rppocket")) &&
 +	    pd->genpd.name && !strcmp(pd->genpd.name, "gpu"))
- 		pd->genpd.flags = 0;
+ 		pd->genpd.flags = GENPD_FLAG_NO_STAY_ON;
  	else
- 		pd->genpd.flags = GENPD_FLAG_PM_CLK;
+ 		pd->genpd.flags = GENPD_FLAG_PM_CLK | GENPD_FLAG_NO_STAY_ON;

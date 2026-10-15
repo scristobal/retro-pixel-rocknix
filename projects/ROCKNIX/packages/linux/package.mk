@@ -15,44 +15,46 @@ PKG_STAMP="${KERNEL_TARGET} ${KERNEL_MAKE_EXTRACMD}"
 
 PKG_PATCH_DIRS="${LINUX} mainline ${DEVICE} default"
 
+[[ "${DEVICE}" =~ "RK3326|RK3399|S922X|H700" ]] && PKG_PATCH_DIRS+=" rocknix-joypad"
 [[ "${DEVICE}" == RK* ]] && PKG_PATCH_DIRS+=" mainline-rockchip"
 [[ "${DEVICE}" == SM* ]] && PKG_DEPENDS_TARGET+=" mkbootimg:host"
-[[ "${ROCKNIX_JOYPAD}" == "yes" ]] && PKG_PATCH_DIRS+=" rocknix-joypad"
 
 case ${DEVICE} in
   RK3588)
     PKG_VERSION="b8e62bed74766b6c8c423a767b35495e78b64caf"
+    PKG_SHA256="0e0fe5a2f108d525a044e190c3f23a4603cdbf8d54bc1cc488d6ee04b9fc5b3a"
     PKG_URL="https://github.com/armbian/linux-rockchip/archive/${PKG_VERSION}.tar.gz"
     PKG_GIT_CLONE_BRANCH="rk-6.1-rkr3"
     PKG_PATCH_DIRS="${LINUX} ${DEVICE} default"
     ;;
-  SM6115|SM8250|SM8550|SM8650|AMD64)
-    PKG_VERSION="7.1.2"
+  RK3576|RK3566)
+    PKG_VERSION="7.2.7"
+    PKG_SHA256="4ac34c47db2540ffb2713943f8d891ff1702e0ba6934525a493b7d1cad43145a"
     PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
-    PKG_PATCH_DIRS+=" 7.0"
-    ;;
-  SM8750)
-    PKG_VERSION="7.1.3"
-    PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
-    PKG_PATCH_DIRS+=" 7.0"
-    ;;
-  H700)
-    PKG_VERSION="7.0.11"
-    PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
-    PKG_PATCH_DIRS+=" 7.0"
-    ;;
-  RK3399|RK3576|RK3566)
-    PKG_VERSION="7.0.2"
-    PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
-    PKG_PATCH_DIRS+=" 7.0"
+    PKG_PATCH_DIRS+=" 7.2.6"
     ;;
   S922X)
-    PKG_VERSION="6.18.38"
+    PKG_VERSION="7.2.9"
+    PKG_SHA256="b4c5dfbe51a364a6c7f03869200f88c8e1f77403539005f14b7fc6bc91b8d8ba"
     PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
+    PKG_PATCH_DIRS+=" 7.2.6"
     ;;
-  *)
-    PKG_VERSION="6.12.79"
-    PKG_PATCH_DIRS+=" 6.12-LTS"
+  H700|SM4450|SM6115|SM8250|SM8550|SM8650|SM8750)
+    PKG_VERSION="7.2"
+    PKG_SHA256="f9fef3d14c0df53819026f4be74459835c2a0b0dcbf5b5bbd9ea19f0829402b3"
+    PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
+    # Note that the patch dir 7.2 is automatically added as it matches the
+    # version. When we move past 7.2, remember to add 7.2 to patch dirs.
+    ;;
+  RK3326|AMD64)
+    PKG_VERSION="7.1.2"
+    PKG_SHA256="37198c93727be247c9fb5309bb86cd5e496c61e5322cd8c4eca9476bb0b5883f"
+    PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
+    PKG_PATCH_DIRS+=" 7.0"
+    ;;
+  RK3399)
+    PKG_VERSION="6.18.54"
+    PKG_SHA256="9df30b02dd8102bbd0be52556288ef6889ddbe7f1ddb96fbf847d0becf3eacac"
     PKG_URL="https://www.kernel.org/pub/linux/kernel/v${PKG_VERSION/.*/}.x/${PKG_NAME}-${PKG_VERSION}.tar.xz"
     ;;
 esac
@@ -89,11 +91,16 @@ elif [ "${DEVICE}" = "SM8250" -o "${DEVICE}" = "H700" -o "${DEVICE}" = "SM8650" 
   PKG_DEPENDS_UNPACK+=" kernel-firmware"
 fi
 
-# SM8750 builds the board audio topology and the speaker-amp calibration blob
-# into the kernel, so the firmware package must be unpacked before the kernel
-# is built.
-if [ "${DEVICE}" = "SM8750" ]; then
+# SM8650/SM8750 build device-specific firmware blobs into the kernel, so the
+# extra-firmware package must be unpacked before the kernel is built.
+if [ "${DEVICE}" = "SM8650" -o "${DEVICE}" = "SM8750" ]; then
   PKG_DEPENDS_UNPACK+=" extra-firmware"
+fi
+
+# A built-in cfg80211 needs regulatory.db inside the kernel image (see
+# pre_make_target), so unpack wireless-regdb before the kernel is built.
+if grep -q '^CONFIG_CFG80211=y' ${PKG_KERNEL_CFG_FILE}; then
+  PKG_DEPENDS_UNPACK+=" wireless-regdb"
 fi
 
 post_patch() {
@@ -244,11 +251,11 @@ pre_make_target() {
     ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE_DIR "external-firmware"
   elif [ "${TARGET_ARCH}" = "aarch64" -a "${DEVICE}" = "SM8650" ]; then
     mkdir -p ${PKG_BUILD}/external-firmware/qcom
-      cp -Lv ${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/filesystem/usr/lib/kernel-overlays/base/lib/firmware/qcom/gen70900_aqe.fw ${PKG_BUILD}/external-firmware/qcom
-      cp -Lv ${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/filesystem/usr/lib/kernel-overlays/base/lib/firmware/qcom/gen70900_sqe.fw ${PKG_BUILD}/external-firmware/qcom
-      cp -Lv ${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/filesystem/usr/lib/kernel-overlays/base/lib/firmware/qcom/gmu_gen70900.bin ${PKG_BUILD}/external-firmware/qcom
+      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/gen70900_aqe.fw ${PKG_BUILD}/external-firmware/qcom
+      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/gen70900_sqe.fw ${PKG_BUILD}/external-firmware/qcom
+      cp -Lv $(get_build_dir kernel-firmware)/.copied-firmware/qcom/gmu_gen70900.bin ${PKG_BUILD}/external-firmware/qcom
     mkdir -p ${PKG_BUILD}/external-firmware/qcom/sm8650/ayaneo/ps2
-      cp -Lv ${PROJECT_DIR}/${PROJECT}/devices/${DEVICE}/filesystem/usr/lib/kernel-overlays/base/lib/firmware/qcom/sm8650/ayaneo/ps2/gen70900_zap.mbn ${PKG_BUILD}/external-firmware/qcom/sm8650/ayaneo/ps2
+      cp -Lv $(get_build_dir extra-firmware)/SM8650/qcom/sm8650/ayaneo/ps2/gen70900_zap.mbn ${PKG_BUILD}/external-firmware/qcom/sm8650/ayaneo/ps2
 
     FW_LIST="$(find ${PKG_BUILD}/external-firmware -type f | sed 's|.*external-firmware/||' | sort | xargs)"
 
@@ -279,6 +286,27 @@ pre_make_target() {
     FW_LIST="$(find ${PKG_BUILD}/external-firmware -type f | sed 's|.*external-firmware/||' | sort | xargs)"
 
     ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE "${FW_LIST}"
+    ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE_DIR "external-firmware"
+  fi
+
+  # cfg80211 requests regulatory.db as soon as it initialises. Built in (=y on
+  # every device but AMD64) that is during kernel init, while /usr/lib/firmware
+  # is still a dangling symlink to the kernel-overlay tmpfs that
+  # kernel-overlays-setup only populates later (scripts/image) - so the request
+  # fails with -ENOENT, the failure is cached, and the radio stays in domain 00
+  # with 5 GHz no-IR. Build the db into the kernel instead. The .p7s signature
+  # goes with it because CONFIG_CFG80211_REQUIRE_SIGNED_REGDB is set. Appends to
+  # whatever the per-device blocks above already listed (~7 KB in the image).
+  if grep -q '^CONFIG_CFG80211=y' ${PKG_BUILD}/.config; then
+    mkdir -p ${PKG_BUILD}/external-firmware
+      cp -Lv $(get_build_dir wireless-regdb)/regulatory.db ${PKG_BUILD}/external-firmware
+      cp -Lv $(get_build_dir wireless-regdb)/regulatory.db.p7s ${PKG_BUILD}/external-firmware
+
+    FW_LIST="$(${PKG_BUILD}/scripts/config --state CONFIG_EXTRA_FIRMWARE)"
+    [ "${FW_LIST}" = "undef" ] && FW_LIST=""
+
+    ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE \
+      "$(echo ${FW_LIST} regulatory.db regulatory.db.p7s | xargs)"
     ${PKG_BUILD}/scripts/config --set-str CONFIG_EXTRA_FIRMWARE_DIR "external-firmware"
   fi
 
@@ -350,8 +378,10 @@ make_target() {
       NO_LIBPFM4=1 \
       NO_LIBBABELTRACE=1 \
       NO_CAPSTONE=1 \
+      NO_RUST=1 \
       CROSS_COMPILE="${TARGET_PREFIX}" \
       JOBS="${CONCURRENCY_MAKE_LEVEL}" \
+      EXTRA_CFLAGS="-g -O2 -Wno-error=discarded-qualifiers" \
         make ${PERF_BUILD_ARGS}
       mkdir -p ${INSTALL}/usr/bin
         cp perf ${INSTALL}/usr/bin
@@ -408,6 +438,4 @@ makeinstall_target() {
       fi
     done
   fi
-
-  makeinstall_host
 }

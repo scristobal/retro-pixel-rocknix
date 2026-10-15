@@ -16,49 +16,19 @@ fi
 # mount $BOOT_ROOT rw
 mount -o remount,rw $BOOT_ROOT
 
-if [ -d "$SYSTEM_ROOT/usr/share/bootloader/rocknix_abl" ]; then
-  mkdir -p $BOOT_ROOT/rocknix_abl
-  echo "Updating ROCKNIX ABL on SD..."
-  cp $SYSTEM_ROOT/usr/share/bootloader/rocknix_abl/* $BOOT_ROOT/rocknix_abl
+if [ -d "$SYSTEM_ROOT/usr/share/bootloader/openabl" ]; then
+  mkdir -p $BOOT_ROOT/openabl
+  echo "Updating OpenABL on SD..."
+  cp $SYSTEM_ROOT/usr/share/bootloader/openabl/* $BOOT_ROOT/openabl
 fi
 
-if [ -f "$SYSTEM_ROOT/usr/share/bootloader/EFI/BOOT/bootaa64.efi" ]; then
-  if [ ! -f "$BOOT_ROOT/EFI/BOOT/bootaa64.efi" ]; then
-    mkdir -p $BOOT_ROOT/EFI/BOOT
-    echo "Installing GRUB..."
-    cp $SYSTEM_ROOT/usr/share/bootloader/EFI/BOOT/bootaa64.efi $BOOT_ROOT/EFI/BOOT
-  fi
-fi
+$SYSTEM_ROOT/usr/bin/updateabl
 
-if [ -d "$SYSTEM_ROOT/usr/share/bootloader/boot/grub" ]; then
-  mkdir -p $BOOT_ROOT/boot/grub
-  echo "Updating grub dtbs..."
-  cp $SYSTEM_ROOT/usr/share/bootloader/boot/grub/*.dtb $BOOT_ROOT/boot/grub
-fi
-
-if [ -f "$SYSTEM_ROOT/usr/share/bootloader/boot/grub/grub.cfg" ]; then
-  mkdir -p $BOOT_ROOT/boot/grub
-  echo "Updating grub.cfg..."
-  cp $SYSTEM_ROOT/usr/share/bootloader/boot/grub/grub.cfg $BOOT_ROOT/boot/grub
-  # Old GRUB installations
-  if [ -f "$BOOT_ROOT/EFI/BOOT/grub.cfg" ]; then
-    cp $SYSTEM_ROOT/usr/share/bootloader/boot/grub/grub.cfg $BOOT_ROOT/EFI/BOOT
-  fi
-fi
-
-if [ -f "$SYSTEM_ROOT/usr/share/bootloader/boot/grub/dejavu-mono.pf2" ]; then
-  mkdir -p $BOOT_ROOT/boot/grub
-  echo "Updating dejavu-mono.pf2..."
-  cp $SYSTEM_ROOT/usr/share/bootloader/boot/grub/dejavu-mono.pf2 $BOOT_ROOT/boot/grub
-fi
-
-if [ -f "$SYSTEM_ROOT/usr/share/bootloader/boot/grub/grubenv" ]; then
-  if [ ! -f "$BOOT_ROOT/boot/grub/grubenv" ]; then
-    mkdir -p $BOOT_ROOT/boot/grub
-    echo "Installing grubenv..."
-    cp $SYSTEM_ROOT/usr/share/bootloader/boot/grub/grubenv $BOOT_ROOT/boot/grub
-  fi
-fi
+### REMOVE IN THE FUTURE ###
+# cleanup old boot files
+[ -d "$BOOT_ROOT/boot" ] && rm -rf "$BOOT_ROOT/boot"
+[ -d "$BOOT_ROOT/EFI" ] && rm -rf "$BOOT_ROOT/EFI"
+# end
 
 # mount $BOOT_ROOT ro
 sync

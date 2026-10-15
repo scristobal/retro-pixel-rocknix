@@ -78,7 +78,7 @@ mkimage_dtb() {
       mcopy "${RELEASE_DIR}/3rdparty/bootloader/stock" ::
       mcopy "${RELEASE_DIR}/3rdparty/bootloader/overlays" ::
       ;;
-    SM8550|SM8650|SM8750|SM8250|SM6115)
+    SM8550|SM8650|SM8750|SM8250|SM6115|SM4450)
       mcopy -s -o "${RELEASE_DIR}/3rdparty/bootloader/boot" ::
       ;;
     S922X)
@@ -95,14 +95,19 @@ mkimage_dtb() {
   fi
 }
 
+mkimage_gou_extras() {
+  echo "image: copying res..."
+  mcopy "${RELEASE_DIR}/3rdparty/bootloader/res" ::
+}
+
 mkimage_grub() {
   echo "image: copying grub files and dtb..."
   mcopy -s -o "${RELEASE_DIR}/3rdparty/bootloader/EFI" ::
 }
 
 mkimage_abl() {
-  echo "image: copying ROCKNIX ABL..."
-  mcopy "${RELEASE_DIR}/3rdparty/bootloader/rocknix_abl" ::
+  echo "image: copying OpenABL..."
+  mcopy "${RELEASE_DIR}/3rdparty/bootloader/openabl" ::
 }
 
 mkimage_all

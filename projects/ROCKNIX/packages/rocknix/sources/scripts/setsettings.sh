@@ -641,6 +641,7 @@ function set_translation() {
         ;;
         *)
             add_setting "none" "ai_service_enable" "true"
+            add_setting "ai_service_pause" "ai_service_pause"
             local AI_LANG="$(game_setting ai_target_lang)"
             local AI_URL="$(game_setting ai_service_url)"
             case ${AI_URL} in
@@ -845,6 +846,11 @@ function set_runahead() {
     esac
 }
 
+function set_latency() {
+    add_setting "video_frame_delay_auto" "video_frame_delay_auto"
+    add_setting "vrr_runloop_enable" "vrr_runloop_enable"
+}
+
 function set_audiolatency() {
     add_setting "audiolatency" "audio_latency"
 }
@@ -994,6 +1000,18 @@ function set_dreamcastopts() {
     fi
 }
 
+function set_melondsds_opt() {
+    local OPT_FILE="${1}"
+    local OPT_KEY="${2}"
+    local OPT_VALUE="${3}"
+    if grep -q "^${OPT_KEY} = " "${OPT_FILE}"
+    then
+        sed -i "/^${OPT_KEY} = /c\\${OPT_KEY} = \"${OPT_VALUE}\"" "${OPT_FILE}"
+    else
+        echo "${OPT_KEY} = \"${OPT_VALUE}\"" >>"${OPT_FILE}"
+    fi
+}
+
 function set_melondsdsopts() {
     log "Set up melonDS DS..."
     if [ "${CORE}" = "melondsds" ]
@@ -1012,6 +1030,42 @@ melonds_console_mode = "ds"
 melonds_show_cursor = "timeout"
 melonds_touch_mode = "auto"
 EOF
+        fi
+
+        local FIT_SCALE="" FIT_GAP="" FIT_WIDTH="" FIT_HEIGHT=""
+        case "${QUIRK_DEVICE}" in
+            "AYN Thor"|"AYN Thor Lite"|"Retroid Pocket Mini V2")
+                ### 1240x1080 bottom panel
+                FIT_SCALE="85"
+                FIT_GAP="15"
+                FIT_WIDTH="1440"
+                FIT_HEIGHT="2079"
+                ;;
+            "Retroid Pocket Mini")
+                ### 1240x930 bottom panel, the secondary screen nearly fills it
+                FIT_SCALE="85"
+                FIT_GAP="1"
+                FIT_WIDTH="1440"
+                FIT_HEIGHT="2004"
+                ;;
+        esac
+
+        if [ -n "${FIT_SCALE}" ]
+        then
+            local SCREEN_SIZING="$(get_setting "screen_sizing" "${PLATFORM}" "${ROM}")"
+            if [ "${SCREEN_SIZING}" = "1" ]
+            then
+                set_melondsds_opt "${MELONDSDSDIR}/melonDS DS.opt" "melonds_secondary_screen_scale" "100"
+                set_melondsds_opt "${MELONDSDSDIR}/melonDS DS.opt" "melonds_screen_gap" "0"
+            else
+                set_melondsds_opt "${MELONDSDSDIR}/melonDS DS.opt" "melonds_secondary_screen_scale" "${FIT_SCALE}"
+                set_melondsds_opt "${MELONDSDSDIR}/melonDS DS.opt" "melonds_screen_gap" "${FIT_GAP}"
+                add_setting "none" "aspect_ratio_index" "23"
+                add_setting "none" "custom_viewport_height" "${FIT_HEIGHT}"
+                add_setting "none" "custom_viewport_width" "${FIT_WIDTH}"
+                add_setting "none" "video_viewport_bias_x" "0.500000"
+                add_setting "none" "video_viewport_bias_y" "-0.000000"
+            fi
         fi
 
         if [ "${PLATFORM}" = "ndsiware" ]
@@ -1284,6 +1338,7 @@ set_savestates &
 set_autosave &
 set_netplay &
 set_runahead &
+set_latency &
 set_audiolatency &
 set_analogsupport &
 set_tatemode &
@@ -1291,11 +1346,11 @@ set_n64opts &
 set_saturnopts &
 set_snesopts &
 set_dreamcastopts &
-set_melondsdsopts &
 
 ### Sed operations are expensive, so they are staged and executed as
 ### a single process when all forks complete.
 wait
+set_melondsdsopts
 flush_settings
 
 cleanup

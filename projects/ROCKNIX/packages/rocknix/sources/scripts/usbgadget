@@ -15,6 +15,11 @@
 MACHINEIDFILE=/storage/.cache/systemd-machine-id
 SERIAL=$(cat ${MACHINEIDFILE})
 
+# QUIRK_DEVICE only exists in a login shell, and a zero length iProduct makes
+# Windows refuse to start the gadget, so resolve it again rather than trust it.
+PRODUCT="${QUIRK_DEVICE:-$(tr -d '\0' < /sys/firmware/devicetree/base/model 2>/dev/null)}"
+PRODUCT="${PRODUCT:-${OS_NAME}}"
+
 CACHEDIR=/storage/.cache/usbgadget
 GADGETCONF=${CACHEDIR}/usbgadget.conf
 GADGETNETCONF=${CACHEDIR}/network.conf
@@ -139,7 +144,7 @@ prepare_usb_network() {
     echo "${devversion}" > ${g_cdc}/bcdDevice
     mkdir ${g_cdc}/strings/0x409
     echo "${OS_NAME}" > ${g_cdc}/strings/0x409/manufacturer
-    echo "${QUIRK_DEVICE}" > ${g_cdc}/strings/0x409/product
+    echo "${PRODUCT}" > ${g_cdc}/strings/0x409/product
     echo "${SERIAL}" > ${g_cdc}/strings/0x409/serialnumber
 
     # config 1 is for CDC
@@ -182,7 +187,7 @@ prepare_usb_network() {
 
 configure_iface() {
 	# Hope udev rule works well, and device gets the name 'gadget'
-	udevadm wait --timeout=5 --settle /sys/class/net/gadget
+	udevadm wait --timeout=5 /sys/class/net/gadget
 	IFACE_NAME=$(cat "${g_cdc}/functions/ncm.usb0/ifname")
 
 	OLDIPADDRFILE=${CACHEDIR}/ip_address.conf
@@ -263,19 +268,24 @@ g_mtp="/sys/kernel/config/usb_gadget/mtp"
 
 prepare_usb_mtp() {
     usb_ver="0x0200" # USB 2.0
-    dev_class="2" # Communications
+    dev_class="0" # Per interface, umtprd declares Still Imaging
     attr="0xC0" # Self powered
     pwr="0xfe" #
 
     mkdir ${g_mtp}
+    # umtprd is built without CONFIG_USB_SS_SUPPORT, so functionfs only hands the
+    # kernel full and high speed descriptors. On a SuperSpeed capable UDC the
+    # composite layer then finds no configuration valid for the negotiated speed
+    # and stalls GET_DESCRIPTOR(CONFIGURATION), leaving the host stuck at addressed.
+    [ -w ${g_mtp}/max_speed ] && echo "high-speed" > ${g_mtp}/max_speed
     echo "${usb_ver}" > ${g_mtp}/bcdUSB
     echo "${dev_class}" > ${g_mtp}/bDeviceClass
     echo "0x1d6b" > ${g_mtp}/idVendor
-    echo "0x0104" > ${g_mtp}/idProduct
+    echo "0x0100" > ${g_mtp}/idProduct
     echo "${devversion}" > ${g_mtp}/bcdDevice
     mkdir ${g_mtp}/strings/0x409
     echo "${OS_NAME}" > ${g_mtp}/strings/0x409/manufacturer
-    echo "${QUIRK_DEVICE}" > ${g_mtp}/strings/0x409/product
+    echo "${PRODUCT}" > ${g_mtp}/strings/0x409/product
     echo "${SERIAL}" > ${g_mtp}/strings/0x409/serialnumber
 
     # config 1 for MTP
@@ -396,8 +406,8 @@ usb_start() {
 			exit 3
 		fi
 
-		mkdir /dev/ffs-umtp
-		mount mtp -t functionfs /dev/ffs-umtp
+		mkdir -p /dev/ffs-umtp
+		mountpoint -q /dev/ffs-umtp || mount mtp -t functionfs /dev/ffs-umtp
 		/usr/sbin/umtprd &
 		sleep 1
 
@@ -425,9 +435,20 @@ usb_start() {
 	usb_trigger async
 }
 
+# umtprd keeps ep0 open, so it has to go before the umount can succeed
+umtp_teardown() {
+	killall umtprd 2>/dev/null
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		mountpoint -q /dev/ffs-umtp 2>/dev/null || break
+		umount /dev/ffs-umtp 2>/dev/null && break
+		sleep 0.1
+	done
+	rmdir /dev/ffs-umtp 2>/dev/null
+}
+
 usb_stop() {
 
-	(
+	{
 		if [ -f ${UDHCPPIDFILE} ] ; then
 			cat ${UDHCPPIDFILE} | xargs -r -n 1 kill
 		fi
@@ -435,12 +456,26 @@ usb_stop() {
 		usb_disable
 
 		if [ -d /dev/ffs-umtp ] ; then
-			umount /dev/ffs-umtp
-			rmdir /dev/ffs-umtp
-
-			killall umtprd
+			umtp_teardown
 		fi
-	) >/dev/null 2>&1
+	} >/dev/null 2>&1
+}
+
+id_role() {
+	for cable in /sys/class/extcon/*/cable.*; do
+		[ "$(cat ${cable}/name 2>/dev/null)" = "USB-HOST" ] || continue
+		[ "$(cat ${cable}/state 2>/dev/null)" = "1" ] && echo host || echo device
+		return 0
+	done
+	return 1
+}
+
+follow_id_role() {
+	[ -r /storage/.config/profile.d/001-device_config ] && . /storage/.config/profile.d/001-device_config
+	[ "${DEVICE_USB_ROLE_FOLLOW_ID}" = "true" ] || return 1
+	[ "${CURRENT_MODE}" = "disabled" ] || return 1
+	ROLE=$(id_role) || return 1
+	set_role "${ROLE}"
 }
 
 set_usb_mode() {
@@ -450,7 +485,7 @@ set_usb_mode() {
 			;;
 		*)
 			usb_stop
-			set_role host
+			follow_id_role || set_role host
 			;;
 	esac
 }
@@ -461,11 +496,7 @@ usb_init_clean_state() {
 		[ -n "$(cat "$udc_link" 2>/dev/null)" ] && echo "" > "$udc_link" 2>/dev/null
 	done
 
-	if mountpoint -q /dev/ffs-umtp 2>/dev/null; then
-		umount /dev/ffs-umtp 2>/dev/null
-	fi
-	[ -d /dev/ffs-umtp ] && rmdir /dev/ffs-umtp 2>/dev/null
-	pkill -x umtprd 2>/dev/null
+	[ -d /dev/ffs-umtp ] && umtp_teardown
 	if [ -f "${UDHCPPIDFILE}" ]; then
 		cat "${UDHCPPIDFILE}" 2>/dev/null | xargs -r -n 1 kill 2>/dev/null
 		rm -f "${UDHCPPIDFILE}"
@@ -509,6 +540,7 @@ case "$1" in
 		usb_stop
 		;;
 	trigger)
+		follow_id_role || :
 		usb_trigger
 		;;
 	restart)
